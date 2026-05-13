@@ -10,7 +10,7 @@ import {
 
 
 
-export default function DocumentacionPage({ goBack, validarGuardar }) {
+export default function DocumentacionPage({ goBack, validarGuardar, goDashboard,onLogout }) {
 const [showModal, setShowModal] = useState(false);
 const [showSuccessModal, setShowSuccessModal] = useState(false);
 
@@ -27,8 +27,17 @@ const [showSuccessModal, setShowSuccessModal] = useState(false);
         </div>
 
         <div className="flex items-center gap-4 text-cyan-700">
-          <Home size={20} />
-          <LogOut size={20} />
+        <button
+            onClick={goDashboard}
+            className="p-2 rounded-lg hover:bg-cyan-50"
+            >
+            <Home size={20} />
+        </button>
+
+
+        <button onClick={onLogout} className="rounded-2xl bg-white p-3 shadow">
+                <LogOut size={20} />
+              </button>
           <span className="rounded-full bg-yellow-100 px-3 py-1 text-xs font-bold text-yellow-700">
             BORRADOR
           </span>

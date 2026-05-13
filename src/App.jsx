@@ -18,6 +18,13 @@ export default function App() {
     setIsLoggedIn(true);
   }
 
+  function handleLogout() {
+    setIsLoggedIn(false);
+    setView("dashboard");
+    setSelectedPatient(null);
+  }
+
+
   if (!isLoggedIn) {
     return <LoginPage onLogin={handleLogin} />;
   }
@@ -59,10 +66,15 @@ export default function App() {
     return (
       <DocumentacionPage
         goBack={() => setView("atencion")}
+        
         validarGuardar={() => {
           alert("Documento validado y guardado en carpeta del paciente (simulado).");
           setView("agenda");
         }}
+        goDashboard={() => setView("dashboard")}
+        
+        onLogout={handleLogout}
+
       />
     );
   }
@@ -70,7 +82,7 @@ export default function App() {
   return (
     <DashboardPage
       provider={provider}
-      onLogout={() => setIsLoggedIn(false)}
+      onLogout={handleLogout}
       goAgenda={() => setView("agenda")}
     />
   );
