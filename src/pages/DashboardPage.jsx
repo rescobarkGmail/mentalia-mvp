@@ -5,11 +5,14 @@ import {
   AlertCircle, ChevronRight, Mic
 } from "lucide-react";
 
-function SidebarButton({ icon, label, active }) {
+function SidebarButton({ icon, label, active, onClick }) {
   return (
-    <button className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm font-bold ${
-      active ? "bg-[#18AFC1] text-white" : "text-slate-500 hover:bg-cyan-50"
-    }`}>
+    <button
+      onClick={onClick}
+      className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm font-bold ${
+        active ? "bg-[#18AFC1] text-white" : "text-slate-500 hover:bg-cyan-50"
+      }`}
+    >
       {icon} {label}
     </button>
   );
@@ -28,7 +31,7 @@ function MetricCard({ icon, title, value, text }) {
   );
 }
 
-export default function DashboardPage({ provider, onLogout }) {
+export default function DashboardPage({ provider, onLogout, goAgenda }) {
   const patients = [
     ["09:00", "María González", "Control ansiedad", "Resumen listo"],
     ["10:30", "Carlos Mendoza", "Seguimiento", "Pre-sesión"],
@@ -52,7 +55,7 @@ export default function DashboardPage({ provider, onLogout }) {
 
           <nav className="space-y-2">
             <SidebarButton active icon={<Home size={20} />} label="Dashboard" />
-            <SidebarButton icon={<CalendarDays size={20} />} label="Agenda" />
+            <SidebarButton icon={<CalendarDays size={20} />} label="Agenda" onClick={goAgenda} />
             <SidebarButton icon={<Users size={20} />} label="Pacientes" />
             <SidebarButton icon={<FileText size={20} />} label="Informes IA" />
             <SidebarButton icon={<BarChart3 size={20} />} label="Indicadores" />
@@ -120,7 +123,10 @@ export default function DashboardPage({ provider, onLogout }) {
                     <h3 className="text-2xl font-black">Agenda y pacientes</h3>
                     <p className="text-sm text-slate-500">Próximas atenciones del día</p>
                   </div>
-                  <button className="rounded-full border px-4 py-2 text-sm font-bold text-cyan-700">
+                  <button
+                    onClick={goAgenda}
+                    className="rounded-full border px-4 py-2 text-sm font-bold text-cyan-700"
+                  >
                     Ver agenda
                   </button>
                 </div>
