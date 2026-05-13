@@ -4,6 +4,7 @@ import DashboardPage from "./pages/DashboardPage";
 import AgendaPage from "./pages/AgendaPage";
 import PreSesionPage from "./pages/PreSesionPage";
 import AtencionPage from "./pages/AtencionPage";
+import DocumentacionPage from "./pages/DocumentacionPage";
 
 
 export default function App() {
@@ -49,12 +50,23 @@ export default function App() {
     return (
       <AtencionPage
         goBack={() => setView("presesion")}
-        finalizarSesion={() => {
-          console.log("Finalizar sesión clínica");
+        finalizarSesion={() => setView("documentacion")}
+      />
+    );
+  }
+ 
+  if (view === "documentacion") {
+    return (
+      <DocumentacionPage
+        goBack={() => setView("atencion")}
+        validarGuardar={() => {
+          alert("Documento validado y guardado en carpeta del paciente (simulado).");
+          setView("agenda");
         }}
       />
     );
   }
+
   return (
     <DashboardPage
       provider={provider}
