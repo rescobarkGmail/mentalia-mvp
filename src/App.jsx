@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import AgendaPage from "./pages/AgendaPage";
@@ -6,24 +7,27 @@ import PreSesionPage from "./pages/PreSesionPage";
 import AtencionPage from "./pages/AtencionPage";
 import DocumentacionPage from "./pages/DocumentacionPage";
 
-
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [provider, setProvider] = useState("Google");
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState("landing");
   const [selectedPatient, setSelectedPatient] = useState(null);
 
   function handleLogin(selectedProvider) {
     setProvider(selectedProvider);
     setIsLoggedIn(true);
+    setView("dashboard");
   }
 
   function handleLogout() {
     setIsLoggedIn(false);
-    setView("dashboard");
+    setView("landing");
     setSelectedPatient(null);
   }
 
+  if (view === "landing") {
+    return <LandingPage goToApp={() => setView("login")} />;
+  }
 
   if (!isLoggedIn) {
     return <LoginPage onLogin={handleLogin} />;
@@ -37,7 +41,6 @@ export default function App() {
           setSelectedPatient(paciente);
           setView("presesion");
         }}
-
       />
     );
   }
@@ -48,11 +51,10 @@ export default function App() {
         paciente={selectedPatient}
         goBack={() => setView("agenda")}
         iniciarSesion={() => setView("atencion")}
-
       />
     );
   }
-  
+
   if (view === "atencion") {
     return (
       <AtencionPage
@@ -61,20 +63,17 @@ export default function App() {
       />
     );
   }
- 
+
   if (view === "documentacion") {
     return (
       <DocumentacionPage
         goBack={() => setView("atencion")}
-        
         validarGuardar={() => {
           alert("Documento validado y guardado en carpeta del paciente (simulado).");
           setView("agenda");
         }}
         goDashboard={() => setView("dashboard")}
-        
         onLogout={handleLogout}
-
       />
     );
   }
