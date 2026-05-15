@@ -27,7 +27,7 @@ export default function LoginPage({ onLogin }) {
 
   async function handleAuth() {
     if (!email || !password) {
-      alert("Ingresa correo y contraseña.");
+      setModalMessage("Ingresa correo y contraseña.");
       return;
     }
 
@@ -36,24 +36,44 @@ export default function LoginPage({ onLogin }) {
         email,
         password,
       });
-    
+
       if (error) {
         setModalMessage(error.message);
-      } else {
-        // 🔥 AQUÍ INSERTAS EN TU TABLA profesional
-        if (data.user) {
-          await supabase.from("profesional").insert([
-            {
-              id: data.user.id,
-              email: data.user.email
-            },
-          ]);
-        }
-    
-        setModalMessage("Usuario registrado. Bienvenido a Mental-IA.");
-        setIsRegister(false);
+        return;
       }
+
+      if (data?.user) {
+        const { error: insertError } = await supabase.from("profesional").insert([
+          {
+            id: data.user.id,
+            email: data.user.email,
+            vigente: true
+          },
+        ]);
+
+        if (insertError) {
+          setModalMessage(`Usuario creado, pero no se pudo crear el perfil profesional: ${insertError.message}`);
+          return;
+        }
+      }
+
+      setModalMessage("Usuario registrado. Revisa tu correo para confirmar tu cuenta en Mental-IA.");
+      setIsRegister(false);
+      return;
     }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      setModalMessage(error.message);
+      return;
+    }
+
+    onLogin("email");
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#e9f8fb] px-4">
@@ -121,7 +141,7 @@ export default function LoginPage({ onLogin }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
             <h2 className="mb-3 text-xl font-black text-slate-900">
-              Mentalia
+              Mental-IA
             </h2>
 
             <p className="mb-6 leading-6 text-slate-600">
@@ -139,7 +159,6 @@ export default function LoginPage({ onLogin }) {
           </div>
         </div>
       )}
-
     </main>
   );
 }
