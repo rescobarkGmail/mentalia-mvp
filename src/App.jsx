@@ -14,7 +14,7 @@ export default function App() {
   const [view, setView] = useState("landing");
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [user, setUser] = useState(null);
-  const [view, setView] = useState("landing");
+  
 
 async function handleLogin() {
   const { data: userData } = await supabase.auth.getUser();
@@ -103,7 +103,7 @@ async function handleLogin() {
       />
     );
   }
-  
+
   return (
     <DashboardPage
       provider={provider}
