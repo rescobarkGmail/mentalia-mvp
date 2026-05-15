@@ -57,7 +57,7 @@ export default function LoginPage({ onLogin }) {
         }
       }
 
-      setModalMessage("Usuario registrado. Revisa tu correo para confirmar tu cuenta en Mental-IA.");
+      setModalMessage("Usuario registrado. Bienvenido a Mental-IA.");
       setIsRegister(false);
       return;
     }
