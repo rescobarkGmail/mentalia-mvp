@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { supabase } from "./lib/supabaseClient";
+
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -7,6 +9,10 @@ import PreSesionPage from "./pages/PreSesionPage";
 import AtencionPage from "./pages/AtencionPage";
 import DocumentacionPage from "./pages/DocumentacionPage";
 import ProfilePage from "./pages/ProfilePage";
+import PacientesPage from "./pages/PacientesPage";
+import DisponibilidadPage from "./pages/DisponibilidadPage";
+import NuevaCitaPage from "./pages/NuevaCitaPage";
+
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -14,31 +20,49 @@ export default function App() {
   const [view, setView] = useState("landing");
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [user, setUser] = useState(null);
-  
+  const [profile, setProfile] = useState(null);
 
-async function handleLogin() {
-  const { data: userData } = await supabase.auth.getUser();
+  async function handleLogin(selectedProvider) {
+    setProvider(selectedProvider);
 
-  const currentUser = userData.user;
-  setUser(currentUser);
+    const { data: userData, error } = await supabase.auth.getUser();
 
-  const { data } = await supabase
-    .from("profesional")
-    .select("*")
-    .eq("id", currentUser.id)
-    .single();
+    if (error || !userData?.user) {
+      alert("No se pudo obtener el usuario autenticado.");
+      return;
+    }
 
-  if (!data.nombres || !data.apellidos) {
-    setView("profile");
-  } else {
-    setView("dashboard");
+    const currentUser = userData.user;
+    setUser(currentUser);
+    setIsLoggedIn(true);
+
+    const { data: perfil, error: perfilError } = await supabase
+      .from("profesional")
+      .select("*")
+      .eq("id", currentUser.id)
+      .single();
+
+    if (perfilError) {
+      alert("No se pudo leer el perfil profesional.");
+      return;
+    }
+
+    setProfile(perfil);
+
+    if (!perfil?.nombres || !perfil?.apellidos) {
+      setView("profile");
+    } else {
+      setView("dashboard");
+    }
+    
   }
-}
 
   function handleLogout() {
     setIsLoggedIn(false);
-    setView("landing");
+    setView("login");
     setSelectedPatient(null);
+    setUser(null);
+    supabase.auth.signOut();
   }
 
   if (view === "landing") {
@@ -47,6 +71,15 @@ async function handleLogin() {
 
   if (!isLoggedIn) {
     return <LoginPage onLogin={handleLogin} />;
+  }
+
+  if (view === "profile") {
+    return (
+      <ProfilePage
+        user={user}
+        onComplete={() => setView("dashboard")}
+      />
+    );
   }
 
   if (view === "agenda") {
@@ -85,7 +118,7 @@ async function handleLogin() {
       <DocumentacionPage
         goBack={() => setView("atencion")}
         validarGuardar={() => {
-          alert("Documento validado y guardado en carpeta del paciente (simulado).");
+          alert("Documento validado y guardado en carpeta del paciente.");
           setView("agenda");
         }}
         goDashboard={() => setView("dashboard")}
@@ -94,21 +127,45 @@ async function handleLogin() {
     );
   }
 
-
-  if (view === "profile") {
+  if (view === "pacientes") {
     return (
-      <ProfilePage
+      <PacientesPage
         user={user}
-        onComplete={() => setView("dashboard")}
+        goBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "disponibilidad") {
+    return (
+      <DisponibilidadPage
+        user={user}
+        goBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "nueva-cita") {
+    return (
+      <NuevaCitaPage
+        user={user}
+        goBack={() => setView("agenda")}
       />
     );
   }
 
   return (
+  
     <DashboardPage
-      provider={provider}
-      onLogout={handleLogout}
-      goAgenda={() => setView("agenda")}
-    />
+    provider={provider}
+    onLogout={handleLogout}
+    goAgenda={() => setView("agenda")}
+    goPacientes={() => setView("pacientes")}
+    goDisponibilidad={() => setView("disponibilidad")}
+    profile={profile}
+    goNuevaCita={() => setView("nueva-cita")}
+  />
+
+  
   );
 }

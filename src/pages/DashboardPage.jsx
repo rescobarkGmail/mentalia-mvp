@@ -31,7 +31,11 @@ function MetricCard({ icon, title, value, text }) {
   );
 }
 
-export default function DashboardPage({ provider, onLogout, goAgenda }) {
+    export default function DashboardPage({ provider, onLogout, goAgenda, goPacientes, goDisponibilidad, profile,goNuevaCita }) {
+    const nombreProfesional = profile?.nombres
+  ? ` ${profile.nombres} ${profile.apellidos || ""}`
+  : " Profesional";
+  
   const patients = [
     ["09:00", "María González", "Control ansiedad", "Resumen listo"],
     ["10:30", "Carlos Mendoza", "Seguimiento", "Pre-sesión"],
@@ -56,7 +60,25 @@ export default function DashboardPage({ provider, onLogout, goAgenda }) {
           <nav className="space-y-2">
             <SidebarButton active icon={<Home size={20} />} label="Dashboard" />
             <SidebarButton icon={<CalendarDays size={20} />} label="Agenda" onClick={goAgenda} />
-            <SidebarButton icon={<Users size={20} />} label="Pacientes" />
+
+            <SidebarButton
+            icon={<Users size={20} />}
+            label="Pacientes"
+            onClick={goPacientes}
+            />
+            <button
+            onClick={goNuevaCita}
+            className="flex items-center gap-2 rounded-full bg-white px-5 py-3 font-black text-cyan-800"
+            >
+            <Plus size={20} /> Nueva cita
+            </button>
+
+            <SidebarButton
+            icon={<CalendarDays size={20} />}
+            label="Disponibilidad"
+            onClick={goDisponibilidad}
+            />
+
             <SidebarButton icon={<FileText size={20} />} label="Informes IA" />
             <SidebarButton icon={<BarChart3 size={20} />} label="Indicadores" />
             <SidebarButton icon={<Settings size={20} />} label="Configuración" />
@@ -98,7 +120,7 @@ export default function DashboardPage({ provider, onLogout, goAgenda }) {
                   <p className="text-sm font-black uppercase tracking-widest text-white/70">
                     Dashboard clínico
                   </p>
-                  <h2 className="mt-2 text-4xl font-black">Bienvenida, Ps. Camila</h2>
+                  <h2 className="mt-2 text-4xl font-black">Bienvenid@, {nombreProfesional}</h2>
                   <p className="mt-2 text-white/85">
                     Login simulado con {provider}. Tienes 4 pacientes agendados y 3 informes IA pendientes.
                   </p>
