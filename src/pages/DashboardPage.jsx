@@ -31,7 +31,7 @@ function MetricCard({ icon, title, value, text }) {
   );
 }
 
-    export default function DashboardPage({ provider, onLogout, goAgenda, goPacientes, goDisponibilidad, profile,goNuevaCita }) {
+    export default function DashboardPage({ provider, onLogout, goAgenda, goPacientes, goDisponibilidad, profile,goNuevaCita , goReservar}) {
     const nombreProfesional = profile?.nombres
   ? ` ${profile.nombres} ${profile.apellidos || ""}`
   : " Profesional";
@@ -72,7 +72,12 @@ function MetricCard({ icon, title, value, text }) {
             >
             <Plus size={20} /> Nueva cita
             </button>
-
+            <button
+                onClick={goReservar}
+                className="flex items-center gap-2 rounded-full border border-cyan-200 bg-white px-5 py-3 font-black text-cyan-700 hover:bg-cyan-50"
+                >
+                Ver reserva pública
+            </button>
             <SidebarButton
             icon={<CalendarDays size={20} />}
             label="Disponibilidad"

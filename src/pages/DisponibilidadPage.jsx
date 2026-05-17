@@ -13,10 +13,34 @@ const dias = [
 
 export default function DisponibilidadPage({ user, goBack }) {
   const [items, setItems] = useState([]);
-  const [diaSemana, setDiaSemana] = useState(1);
-  const [horaInicio, setHoraInicio] = useState("09:00");
-  const [horaFin, setHoraFin] = useState("13:00");
+  
+  const [diaSemana, setDiaSemana] = useState("1");
+  const [horaInicio, setHoraInicio] = useState("");
+  const [horaFin, setHoraFin] = useState("");
   const [duracion, setDuracion] = useState(60);
+  const [guardando, setGuardando] = useState(false);
+  const hoy = new Date().toISOString().slice(0, 10);
+  const fechaMas30 = new Date();
+  fechaMas30.setDate(fechaMas30.getDate() + 30);
+  const fechaMas30Texto = fechaMas30.toISOString().slice(0, 10);
+  
+  const [fechaInicio, setFechaInicio] = useState(hoy);
+  const [fechaFin, setFechaFin] = useState(fechaMas30Texto);
+
+   function resetFormulario() {
+    const hoyNuevo = new Date().toISOString().slice(0, 10);
+  
+    const fechaMas30Nueva = new Date();
+    fechaMas30Nueva.setDate(fechaMas30Nueva.getDate() + 30);
+    const fechaMas30NuevaTexto = fechaMas30Nueva.toISOString().slice(0, 10);
+  
+    setDiaSemana();
+    setHoraInicio("");
+    setHoraFin("");
+    setDuracion(60);
+    setFechaInicio(hoyNuevo);
+    setFechaFin(fechaMas30NuevaTexto);
+  }
 
   async function cargar() {
     const { data, error } = await supabase
@@ -28,24 +52,44 @@ export default function DisponibilidadPage({ user, goBack }) {
     if (!error) setItems(data || []);
   }
 
-  async function guardar() {
-    const { error } = await supabase.from("disponibilidad_profesional").insert([
-      {
-        profesional_id: user.id,
-        dia_semana: diaSemana,
-        hora_inicio: horaInicio,
-        hora_fin: horaFin,
-        duracion_minutos: Number(duracion),
-      },
-    ]);
+ async function guardar() {
+  if (guardando) return;
 
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    cargar();
+  if (horaInicio >= horaFin) {
+    alert("La hora de inicio debe ser menor que la hora de fin.");
+    return;
   }
+
+  if (fechaInicio > fechaFin) {
+    alert("La fecha de inicio debe ser menor o igual que la fecha de fin.");
+    return;
+  }
+
+  setGuardando(true);
+
+  const { error } = await supabase.from("disponibilidad_profesional").insert([
+    {
+      profesional_id: user.id,
+      dia_semana: diaSemana,
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      duracion_minutos: Number(duracion),
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+    },
+  ]);
+
+  setGuardando(false);
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  await cargar();
+  resetFormulario();
+  alert("Disponibilidad guardada correctamente.");
+}
 
   async function eliminar(id) {
     const { error } = await supabase
@@ -72,7 +116,7 @@ export default function DisponibilidadPage({ user, goBack }) {
         <section className="mb-6 rounded-2xl bg-white p-6 shadow">
           <h2 className="mb-4 font-black">Agregar horario disponible</h2>
 
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-3">
             <select
               value={diaSemana}
               onChange={(e) => setDiaSemana(Number(e.target.value))}
@@ -84,6 +128,20 @@ export default function DisponibilidadPage({ user, goBack }) {
                 </option>
               ))}
             </select>
+
+            <input
+              type="date"
+              value={fechaInicio}
+              onChange={(e) => setFechaInicio(e.target.value)}
+              className="rounded-xl border px-4 py-3"
+            />
+
+            <input
+              type="date"
+              value={fechaFin}
+              onChange={(e) => setFechaFin(e.target.value)}
+              className="rounded-xl border px-4 py-3"
+            />
 
             <input
               type="time"
@@ -110,13 +168,14 @@ export default function DisponibilidadPage({ user, goBack }) {
               <option value="90">90 min</option>
             </select>
           </div>
-
           <button
             onClick={guardar}
-            className="mt-4 rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white"
+            disabled={guardando}
+            className="mt-4 rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white disabled:opacity-50"
           >
-            Guardar disponibilidad
+            {guardando ? "Guardando..." : "Guardar disponibilidad"}
           </button>
+
         </section>
 
         <section className="rounded-2xl bg-white p-6 shadow">
@@ -138,6 +197,8 @@ export default function DisponibilidadPage({ user, goBack }) {
                     <p className="text-sm text-slate-500">
                       {item.hora_inicio.slice(0, 5)} - {item.hora_fin.slice(0, 5)} ·{" "}
                       {item.duracion_minutos} min
+                      <br />
+                        Desde {item.fecha_inicio} hasta {item.fecha_fin}
                     </p>
                   </div>
 
@@ -157,25 +218,5 @@ export default function DisponibilidadPage({ user, goBack }) {
   );
 }
 
-function generarSlots(horaInicio, horaFin, duracion) {
-    const slots = [];
-  
-    let [h, m] = horaInicio.split(":").map(Number);
-    const [hFin, mFin] = horaFin.split(":").map(Number);
-  
-    let inicio = new Date();
-    inicio.setHours(h, m, 0);
-  
-    let fin = new Date();
-    fin.setHours(hFin, mFin, 0);
-  
-    while (inicio < fin) {
-      const hora = inicio.toTimeString().slice(0, 5);
-      slots.push(hora);
-  
-      inicio = new Date(inicio.getTime() + duracion * 60000);
-    }
-  
-    return slots;
-  }
+
 

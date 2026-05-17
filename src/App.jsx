@@ -12,6 +12,7 @@ import ProfilePage from "./pages/ProfilePage";
 import PacientesPage from "./pages/PacientesPage";
 import DisponibilidadPage from "./pages/DisponibilidadPage";
 import NuevaCitaPage from "./pages/NuevaCitaPage";
+import ReservarHoraPage from "./pages/ReservarHoraPage";
 
 
 export default function App() {
@@ -154,6 +155,15 @@ export default function App() {
     );
   }
 
+  if (view === "reservar") {
+    return (
+      <ReservarHoraPage
+        profesionalId={user?.id}
+        goBack={() => setView("dashboard")}
+      />
+    );
+  }
+
   return (
   
     <DashboardPage
@@ -164,6 +174,7 @@ export default function App() {
     goDisponibilidad={() => setView("disponibilidad")}
     profile={profile}
     goNuevaCita={() => setView("nueva-cita")}
+    goReservar={() => setView("reservar")}
   />
 
   
