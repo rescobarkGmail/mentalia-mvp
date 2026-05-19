@@ -13,7 +13,10 @@ const dias = [
 ];
 
 function fechaTexto(fecha) {
-  return fecha.toISOString().slice(0, 10);
+  const year = fecha.getFullYear();
+  const month = String(fecha.getMonth() + 1).padStart(2, "0");
+  const day = String(fecha.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function inicioSemana(fechaBase) {
@@ -62,6 +65,7 @@ export default function DisponibilidadPage({ user, goBack }) {
   const [fechaInicio, setFechaInicio] = useState("");
   const [fechaFin, setFechaFin] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [editandoId, setEditandoId] = useState(null);
 
   const [modal, setModal] = useState({
     visible: false,
@@ -97,7 +101,46 @@ export default function DisponibilidadPage({ user, goBack }) {
     setDuracion("");
     setFechaInicio("");
     setFechaFin("");
+    setEditandoId(null);
   }
+
+  function tieneReservasVigentes(item) {
+    return citas.some((cita) => {
+      const fechaCita = cita.fecha?.slice(0, 10);
+      const horaCita = cita.hora_inicio?.slice(0, 5);
+  
+      const mismaRegla =
+        fechaCita >= item.fecha_inicio &&
+        fechaCita <= item.fecha_fin &&
+        horaCita >= item.hora_inicio.slice(0, 5) &&
+        horaCita < item.hora_fin.slice(0, 5) &&
+        cita.estado !== "cancelada";
+  
+      const fechaObj = new Date(fechaCita + "T00:00:00");
+      const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+  
+      return mismaRegla && diaJS === item.dia_semana;
+    });
+  }
+
+  function editar(item) {
+  if (tieneReservasVigentes(item)) {
+    mostrarModal(
+      "No se puede modificar",
+      "Esta disponibilidad tiene reservas vigentes. Para modificarla, primero debes cancelar o reagendar las citas asociadas."
+    );
+    return;
+  }
+
+  setEditandoId(item.id);
+  setDiaSemana(String(item.dia_semana));
+  setHoraInicio(item.hora_inicio.slice(0, 5));
+  setHoraFin(item.hora_fin.slice(0, 5));
+  setDuracion(String(item.duracion_minutos));
+  setFechaInicio(item.fecha_inicio);
+  setFechaFin(item.fecha_fin);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
 
   async function guardar() {
     if (guardando) return;
@@ -119,17 +162,25 @@ export default function DisponibilidadPage({ user, goBack }) {
 
     setGuardando(true);
 
-    const { error } = await supabase.from("disponibilidad_profesional").insert([
-      {
-        profesional_id: user.id,
-        dia_semana: Number(diaSemana),
-        hora_inicio: horaInicio,
-        hora_fin: horaFin,
-        duracion_minutos: Number(duracion),
-        fecha_inicio: fechaInicio,
-        fecha_fin: fechaFin,
-      },
-    ]);
+    const payload = {
+      profesional_id: user.id,
+      dia_semana: Number(diaSemana),
+      hora_inicio: horaInicio,
+      hora_fin: horaFin,
+      duracion_minutos: Number(duracion),
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+    };
+
+    const { error } = editandoId
+      ? await supabase
+          .from("disponibilidad_profesional")
+          .update(payload)
+          .eq("id", editandoId)
+          .eq("profesional_id", user.id)
+      : await supabase
+          .from("disponibilidad_profesional")
+          .insert([payload]);
 
     setGuardando(false);
 
@@ -137,27 +188,65 @@ export default function DisponibilidadPage({ user, goBack }) {
       mostrarModal("Error", error.message);
       return;
     }
-
-    await cargar();
+    
+    if (editandoId) {
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === editandoId
+            ? {
+                ...item,
+                dia_semana: Number(diaSemana),
+                hora_inicio: horaInicio,
+                hora_fin: horaFin,
+                duracion_minutos: Number(duracion),
+                fecha_inicio: fechaInicio,
+                fecha_fin: fechaFin,
+              }
+            : item
+        )
+      );
+    } else {
+      await cargar();
+    }
+    
     resetFormulario();
-    mostrarModal("Disponibilidad", "Disponibilidad guardada correctamente.");
+    
+    mostrarModal(
+      "Disponibilidad",
+      editandoId
+        ? "Disponibilidad actualizada correctamente."
+        : "Disponibilidad guardada correctamente."
+    );
   }
 
-  async function eliminar(id) {
-    const confirma = window.confirm("¿Estás seguro de eliminar esta disponibilidad?");
+  async function eliminar(item) {
+    if (tieneReservasVigentes(item)) {
+      mostrarModal(
+        "No se puede eliminar",
+        "Esta disponibilidad tiene reservas vigentes. Para eliminarla, primero debes cancelar o reagendar las citas asociadas."
+      );
+      return;
+    }
+  
+    const confirma = window.confirm(
+      "¿Estás seguro de eliminar esta disponibilidad?"
+    );
+  
     if (!confirma) return;
-
+  
     const { error } = await supabase
       .from("disponibilidad_profesional")
       .delete()
-      .eq("id", id);
-
+      .eq("id", item.id)
+      .eq("profesional_id", user.id);
+  
     if (error) {
       mostrarModal("Error", error.message);
       return;
     }
-
-    await cargar();
+  
+    setItems((prev) => prev.filter((registro) => registro.id !== item.id));
+  
     mostrarModal("Disponibilidad", "Disponibilidad eliminada correctamente.");
   }
 
@@ -202,10 +291,10 @@ export default function DisponibilidadPage({ user, goBack }) {
   function renderSlot(slot, tipo, fecha, index) {
     return (
       <div
-        key={`${tipo}-${formatearFecha(fecha)}-${slot.hora}-${index}`}
+        key={`${tipo}-${fecha}-${slot.hora}-${index}`}
         className={`rounded-xl px-3 py-2 text-center text-sm font-bold ${
           slot.reservado
-            ? "bg-green-100 text-green-700"
+            ? "border border-slate-900 bg-slate-700 text-white"
             : tipo === "AM"
             ? "bg-cyan-50 text-cyan-700"
             : "bg-orange-50 text-orange-700"
@@ -214,15 +303,13 @@ export default function DisponibilidadPage({ user, goBack }) {
         {slot.hora}
         <br />
         <span className="text-[11px]">
-          {slot.reservado ? "Reservado" : "Disponible"}
+          {slot.reservado ? "🔒 Reservado" : "✓ Disponible"}
         </span>
       </div>
     );
   }
 
   function renderBloqueHorario(titulo, tipo) {
-    const finSemana = sumarDias(semanaBase, 6);
-
     return (
       <div className="mb-8">
         <h3
@@ -247,7 +334,7 @@ export default function DisponibilidadPage({ user, goBack }) {
                 : slots.filter((s) => Number(s.hora.slice(0, 2)) >= 14);
 
             return (
-              <div key={`${tipo}-${formatearFecha(fecha)}`} className="rounded-2xl border bg-slate-50 p-3">
+              <div key={`${tipo}-${fecha}`} className="rounded-2xl border bg-slate-50 p-3">
                 <h4 className="text-center font-black text-cyan-700">
                   {dias.find((d) => d.id === dia)?.nombre}
                 </h4>
@@ -295,8 +382,14 @@ export default function DisponibilidadPage({ user, goBack }) {
 
         <section className="mb-6 rounded-2xl bg-white p-6 shadow">
           <h2 className="mb-4 text-center font-black">
-            Agregar horario disponible
+            {editandoId ? "Editar horario disponible" : "Agregar horario disponible"}
           </h2>
+
+          {editandoId && (
+            <div className="mb-4 rounded-2xl bg-yellow-50 p-4 text-center text-sm font-bold text-yellow-700">
+              Estás editando una disponibilidad existente.
+            </div>
+          )}
 
           <div className="grid gap-3 md:grid-cols-3">
             <select
@@ -355,14 +448,27 @@ export default function DisponibilidadPage({ user, goBack }) {
             </select>
           </div>
 
-          <div className="mt-4 flex justify-center">
+          <div className="mt-4 flex justify-center gap-3">
             <button
               onClick={guardar}
               disabled={guardando}
               className="rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white disabled:opacity-50"
             >
-              {guardando ? "Guardando..." : "Guardar disponibilidad"}
+              {guardando
+                ? "Guardando..."
+                : editandoId
+                ? "Actualizar disponibilidad"
+                : "Guardar disponibilidad"}
             </button>
+
+            {editandoId && (
+              <button
+                onClick={resetFormulario}
+                className="rounded-xl border px-6 py-3 font-black text-slate-600"
+              >
+                Cancelar edición
+              </button>
+            )}
           </div>
         </section>
 
@@ -376,8 +482,8 @@ export default function DisponibilidadPage({ user, goBack }) {
             </button>
 
             <h2 className="text-center font-black">
-            Semana {formatearFecha(fechaTexto(semanaBase))} al{" "}
-{formatearFecha(fechaTexto(finSemana))}
+              Semana {formatearFecha(fechaTexto(semanaBase))} al{" "}
+              {formatearFecha(fechaTexto(finSemana))}
             </h2>
 
             <button
@@ -420,17 +526,26 @@ export default function DisponibilidadPage({ user, goBack }) {
                     </p>
 
                     <p className="text-sm text-slate-500">
-                    Desde {formatearFecha(item.fecha_inicio)} hasta{" "}
-{formatearFecha(item.fecha_fin)}
+                      Desde {formatearFecha(item.fecha_inicio)} hasta{" "}
+                      {formatearFecha(item.fecha_fin)}
                     </p>
                   </div>
 
-                  <button
-                    onClick={() => eliminar(item.id)}
-                    className="rounded-xl border px-4 py-2 font-bold text-red-600"
-                  >
-                    Eliminar
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => editar(item)}
+                      className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
+                    >
+                      Editar
+                    </button>
+
+                    <button
+                      onClick={() => eliminar(item)}
+                      className="rounded-xl border px-4 py-2 font-bold text-red-600"
+                    >
+                      Eliminar
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

@@ -13,6 +13,7 @@ import PacientesPage from "./pages/PacientesPage";
 import DisponibilidadPage from "./pages/DisponibilidadPage";
 import NuevaCitaPage from "./pages/NuevaCitaPage";
 import ReservarHoraPage from "./pages/ReservarHoraPage";
+import SesionClinicaPage from "./pages/SesionClinicaPage";
 
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [citaActiva, setCitaActiva] = useState(null);
 
   async function handleLogin(selectedProvider) {
     setProvider(selectedProvider);
@@ -58,6 +60,11 @@ export default function App() {
     
   }
 
+  function iniciarFlujo(cita) {
+    setCitaActiva(cita);
+    setView("sesion-clinica");
+  }
+
   function handleLogout() {
     setIsLoggedIn(false);
     setView("login");
@@ -87,13 +94,22 @@ export default function App() {
     return (
       <AgendaPage
         goBack={() => setView("dashboard")}
-        iniciarFlujo={(paciente) => {
-          setSelectedPatient(paciente);
-          setView("presesion");
-        }}
+        iniciarFlujo={iniciarFlujo}
+      />
+
+    );
+  }
+
+  if (view === "sesion-clinica") {
+    return (
+      <SesionClinicaPage
+        user={user}
+        cita={citaActiva}
+        goBack={() => setView("agenda")}
       />
     );
   }
+  
 
   if (view === "presesion") {
     return (

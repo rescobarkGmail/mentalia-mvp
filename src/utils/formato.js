@@ -1,13 +1,10 @@
 export function formatearFecha(fechaTexto) {
     if (!fechaTexto) return "";
   
-    const fecha = new Date(fechaTexto);
+    const soloFecha = fechaTexto.slice(0, 10);
+    const [year, month, day] = soloFecha.split("-");
   
-    return fecha.toLocaleDateString("es-CL", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
+    return `${day}/${month}/${year}`;
   }
   
   export function formatearFechaHora(fechaTexto) {
