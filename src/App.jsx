@@ -14,7 +14,8 @@ import DisponibilidadPage from "./pages/DisponibilidadPage";
 import NuevaCitaPage from "./pages/NuevaCitaPage";
 import ReservarHoraPage from "./pages/ReservarHoraPage";
 import SesionClinicaPage from "./pages/SesionClinicaPage";
-
+import FichaClinicaPage from "./pages/FichaClinicaPage";
+import ConfiguracionPage from "./pages/ConfiguracionPage";
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -24,6 +25,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [citaActiva, setCitaActiva] = useState(null);
+  const [pacienteActivo, setPacienteActivo] = useState(null);
+  const [citaPreSesion, setCitaPreSesion] = useState(null);
 
   async function handleLogin(selectedProvider) {
     setProvider(selectedProvider);
@@ -60,7 +63,17 @@ export default function App() {
     
   }
 
+  function verFichaClinica(paciente) {
+    setPacienteActivo(paciente);
+    setView("ficha-clinica");
+  }
+
   function iniciarFlujo(cita) {
+    setCitaPreSesion(cita);
+    setView("pre-sesion");
+  }
+
+  function iniciarSesionClinica(cita) {
     setCitaActiva(cita);
     setView("sesion-clinica");
   }
@@ -97,6 +110,26 @@ export default function App() {
         iniciarFlujo={iniciarFlujo}
       />
 
+    );
+  }
+
+  if (view === "configuracion") {
+    return (
+      <ConfiguracionPage
+        user={user}
+        goBack={() => setView("dashboard")}
+      />
+    );
+  }
+
+  if (view === "pre-sesion") {
+    return (
+      <PreSesionPage
+        user={user}
+        cita={citaPreSesion}
+        iniciarSesionClinica={iniciarSesionClinica}
+        goBack={() => setView("agenda")}
+      />
     );
   }
 
@@ -149,7 +182,9 @@ export default function App() {
       <PacientesPage
         user={user}
         goBack={() => setView("dashboard")}
+        verFichaClinica={verFichaClinica}
       />
+
     );
   }
 
@@ -171,6 +206,16 @@ export default function App() {
     );
   }
 
+  if (view === "ficha-clinica") {
+    return (
+      <FichaClinicaPage
+        user={user}
+        paciente={pacienteActivo}
+        goBack={() => setView("pacientes")}
+      />
+    );
+  }
+
   if (view === "reservar") {
     return (
       <ReservarHoraPage
@@ -182,16 +227,17 @@ export default function App() {
 
   return (
   
-    <DashboardPage
-    provider={provider}
-    onLogout={handleLogout}
-    goAgenda={() => setView("agenda")}
-    goPacientes={() => setView("pacientes")}
-    goDisponibilidad={() => setView("disponibilidad")}
-    profile={profile}
-    goNuevaCita={() => setView("nueva-cita")}
-    goReservar={() => setView("reservar")}
-  />
+<DashboardPage
+  provider={provider}
+  onLogout={handleLogout}
+  goAgenda={() => setView("agenda")}
+  goPacientes={() => setView("pacientes")}
+  goDisponibilidad={() => setView("disponibilidad")}
+  goConfiguracion={() => setView("configuracion")}
+  profile={profile}
+  goNuevaCita={() => setView("nueva-cita")}
+  goReservar={() => setView("reservar")}
+/>
 
   
   );

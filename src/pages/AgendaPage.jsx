@@ -78,6 +78,7 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
           id,
           nombres,
           apellidos,
+          identificador,
           email,
           telefono
         )
@@ -145,6 +146,7 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
         id: cita.pacientes?.id,
         nombres: cita.pacientes?.nombres,
         apellidos: cita.pacientes?.apellidos,
+        identificador: cita.pacientes?.identificador,
         email: cita.pacientes?.email,
         telefono: cita.pacientes?.telefono,
       },

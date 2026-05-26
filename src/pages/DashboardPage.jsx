@@ -31,7 +31,8 @@ function MetricCard({ icon, title, value, text }) {
   );
 }
 
-    export default function DashboardPage({ provider, onLogout, goAgenda, goPacientes, goDisponibilidad, profile,goNuevaCita , goReservar}) {
+    export default function DashboardPage({  provider,  onLogout,  goAgenda,  goPacientes,  goDisponibilidad,  goConfiguracion,  profile,  goNuevaCita,  goReservar,}) {
+
     const nombreProfesional = profile?.nombres
   ? ` ${profile.nombres} ${profile.apellidos || ""}`
   : " Profesional";
@@ -86,7 +87,12 @@ function MetricCard({ icon, title, value, text }) {
 
             <SidebarButton icon={<FileText size={20} />} label="Informes IA" />
             <SidebarButton icon={<BarChart3 size={20} />} label="Indicadores" />
-            <SidebarButton icon={<Settings size={20} />} label="Configuración" />
+            <SidebarButton
+              icon={<Settings size={20} />}
+              label="Configuración"
+              onClick={goConfiguracion}
+              />
+
           </nav>
 
           <div className="mt-8 rounded-3xl bg-cyan-50 p-5">
