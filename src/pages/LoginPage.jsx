@@ -128,11 +128,23 @@ export default function LoginPage({ onLogin }) {
               onClick={() => onLogin("Microsoft")}
             />
 
-            <LoginButton
-              provider="Ingresar con Google"
-              icon={<GoogleLogo />}
-              onClick={() => onLogin("Google")}
-            />
+          <LoginButton
+            provider="Ingresar con Google"
+            icon={<GoogleLogo />}
+            onClick={async () => {
+              const { error } = await supabase.auth.signInWithOAuth({
+                provider: "google",
+                options: {
+                  redirectTo: window.location.origin,
+                },
+              });
+
+              if (error) {
+                setModalMessage(error.message);
+              }
+            }}
+          />
+
           </div>
         </div>
       </motion.section>

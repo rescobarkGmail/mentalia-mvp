@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { formatearFecha } from "../utils/formato";
+import {  obtenerAccessTokenGoogle,  leerJsonSesionDrive,} from "../lib/googleDriveClient";
+
 
 export default function PreSesionPage({
   user,
@@ -17,15 +19,22 @@ export default function PreSesionPage({
 
   async function cargarPreSesion() {
     setCargando(true);
-
-    const pacienteId = cita.paciente_id || cita.paciente?.id || cita.pacientes?.id;
-
+  
+    const pacienteId =
+      cita.paciente_id ||
+      cita.paciente?.id ||
+      cita.pacientes?.id;
+  
     if (!pacienteId) {
       setCargando(false);
-      alert("No se pudo identificar el paciente para cargar la pre-sesión.");
+  
+      alert(
+        "No se pudo identificar el paciente para cargar la pre-sesión."
+      );
+  
       return;
     }
-
+  
     const { data, error } = await supabase
       .from("sesiones_clinicas")
       .select("*")
@@ -34,15 +43,52 @@ export default function PreSesionPage({
       .order("fecha_crea", { ascending: false })
       .limit(1)
       .maybeSingle();
-
-    setCargando(false);
-
+  
     if (error) {
+      setCargando(false);
       alert(error.message);
       return;
     }
-
-    setUltimaSesion(data || null);
+  
+    if (!data) {
+      setUltimaSesion(null);
+      setCargando(false);
+      return;
+    }
+  
+    let sesionFinal = data;
+  
+    try {
+      if (
+        data.clinical_data_external === true &&
+        data.storage_provider === "google_drive" &&
+        data.storage_file_id
+      ) {
+        const accessToken =
+          await obtenerAccessTokenGoogle();
+  
+        const jsonDrive =
+          await leerJsonSesionDrive({
+            accessToken,
+            fileId: data.storage_file_id,
+          });
+  
+        sesionFinal = {
+          ...data,
+          ...(jsonDrive.sesion || {}),
+          origen_datos: "google_drive",
+        };
+      }
+    } catch (errorDrive) {
+      alert(
+        "No fue posible leer la sesión clínica desde Google Drive: " +
+          errorDrive.message
+      );
+    }
+  
+    setUltimaSesion(sesionFinal);
+  
+    setCargando(false);
   }
 
   function continuarSesion() {

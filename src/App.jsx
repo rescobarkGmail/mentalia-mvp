@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
 
 import LandingPage from "./pages/LandingPage";
@@ -21,12 +21,84 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [provider, setProvider] = useState("Google");
   const [view, setView] = useState("landing");
+
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
+
   const [citaActiva, setCitaActiva] = useState(null);
   const [pacienteActivo, setPacienteActivo] = useState(null);
   const [citaPreSesion, setCitaPreSesion] = useState(null);
+
+  async function obtenerPerfilProfesional(currentUser) {
+    let { data: perfil } = await supabase
+      .from("profesional")
+      .select("*")
+      .eq("id", currentUser.id)
+      .maybeSingle();
+
+    if (!perfil && currentUser.email) {
+      const { data: perfilPorEmail } = await supabase
+        .from("profesional")
+        .select("*")
+        .eq("email", currentUser.email)
+        .maybeSingle();
+
+      perfil = perfilPorEmail;
+    }
+
+    return perfil;
+  }
+
+  function construirUsuarioOperativo(currentUser, perfil) {
+    return {
+      ...currentUser,
+      id: perfil?.id || currentUser.id,
+      auth_id: currentUser.id,
+      email: currentUser.email,
+    };
+  }
+
+  async function aplicarSesion(currentUser, selectedProvider = "Google") {
+    const perfil = await obtenerPerfilProfesional(currentUser);
+    const usuarioOperativo = construirUsuarioOperativo(currentUser, perfil);
+
+    setUser(usuarioOperativo);
+    setProfile(perfil);
+    setProvider(selectedProvider);
+    setIsLoggedIn(true);
+
+    if (!perfil?.nombres || !perfil?.apellidos) {
+      setView("profile");
+    } else {
+      setView("dashboard");
+    }
+  }
+
+  useEffect(() => {
+    async function recuperarSesion() {
+      const { data } = await supabase.auth.getSession();
+      const session = data?.session;
+
+      if (!session?.user) return;
+
+      await aplicarSesion(session.user, "Google");
+    }
+
+    recuperarSesion();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!session?.user) return;
+
+      await aplicarSesion(session.user, "Google");
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   async function handleLogin(selectedProvider) {
     setProvider(selectedProvider);
@@ -38,29 +110,20 @@ export default function App() {
       return;
     }
 
-    const currentUser = userData.user;
-    setUser(currentUser);
-    setIsLoggedIn(true);
+    await aplicarSesion(userData.user, selectedProvider);
+  }
 
-    const { data: perfil, error: perfilError } = await supabase
-      .from("profesional")
-      .select("*")
-      .eq("id", currentUser.id)
-      .single();
+  async function handleLogout() {
+    await supabase.auth.signOut();
 
-    if (perfilError) {
-      alert("No se pudo leer el perfil profesional.");
-      return;
-    }
-
-    setProfile(perfil);
-
-    if (!perfil?.nombres || !perfil?.apellidos) {
-      setView("profile");
-    } else {
-      setView("dashboard");
-    }
-    
+    setIsLoggedIn(false);
+    setView("login");
+    setSelectedPatient(null);
+    setUser(null);
+    setProfile(null);
+    setCitaActiva(null);
+    setPacienteActivo(null);
+    setCitaPreSesion(null);
   }
 
   function verFichaClinica(paciente) {
@@ -76,14 +139,6 @@ export default function App() {
   function iniciarSesionClinica(cita) {
     setCitaActiva(cita);
     setView("sesion-clinica");
-  }
-
-  function handleLogout() {
-    setIsLoggedIn(false);
-    setView("login");
-    setSelectedPatient(null);
-    setUser(null);
-    supabase.auth.signOut();
   }
 
   if (view === "landing") {
@@ -109,7 +164,6 @@ export default function App() {
         goBack={() => setView("dashboard")}
         iniciarFlujo={iniciarFlujo}
       />
-
     );
   }
 
@@ -142,7 +196,6 @@ export default function App() {
       />
     );
   }
-  
 
   if (view === "presesion") {
     return (
@@ -184,7 +237,6 @@ export default function App() {
         goBack={() => setView("dashboard")}
         verFichaClinica={verFichaClinica}
       />
-
     );
   }
 
@@ -226,19 +278,16 @@ export default function App() {
   }
 
   return (
-  
-<DashboardPage
-  provider={provider}
-  onLogout={handleLogout}
-  goAgenda={() => setView("agenda")}
-  goPacientes={() => setView("pacientes")}
-  goDisponibilidad={() => setView("disponibilidad")}
-  goConfiguracion={() => setView("configuracion")}
-  profile={profile}
-  goNuevaCita={() => setView("nueva-cita")}
-  goReservar={() => setView("reservar")}
-/>
-
-  
+    <DashboardPage
+      provider={provider}
+      onLogout={handleLogout}
+      goAgenda={() => setView("agenda")}
+      goPacientes={() => setView("pacientes")}
+      goDisponibilidad={() => setView("disponibilidad")}
+      goConfiguracion={() => setView("configuracion")}
+      profile={profile}
+      goNuevaCita={() => setView("nueva-cita")}
+      goReservar={() => setView("reservar")}
+    />
   );
 }
