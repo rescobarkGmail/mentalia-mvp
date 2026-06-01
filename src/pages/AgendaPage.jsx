@@ -21,14 +21,17 @@ function fechaTexto(fecha) {
 
 function inicioSemana(fechaBase) {
   const fecha = new Date(fechaBase);
+  fecha.setHours(0, 0, 0, 0);
+
   const dia = fecha.getDay() === 0 ? 7 : fecha.getDay();
   fecha.setDate(fecha.getDate() - dia + 1);
+
   return fecha;
 }
 
-function sumarDias(fecha, dias) {
+function sumarDias(fecha, cantidadDias) {
   const nueva = new Date(fecha);
-  nueva.setDate(nueva.getDate() + dias);
+  nueva.setDate(nueva.getDate() + cantidadDias);
   return nueva;
 }
 
@@ -54,61 +57,97 @@ function StatusBadge({ status }) {
         styles[status] || "bg-slate-100 text-slate-600"
       }`}
     >
-      {status}
+      {status || "sin estado"}
     </span>
   );
 }
 
-export default function AgendaPage({ goBack, iniciarFlujo }) {
-  const [view, setView] = useState("day");
+export default function AgendaPage({
+  user,
+  refreshKey = 0,
+  goBack,
+  iniciarFlujo,
+}) {
+  const [view, setView] = useState("week");
   const [citas, setCitas] = useState([]);
   const [disponibilidad, setDisponibilidad] = useState([]);
   const [semanaBase, setSemanaBase] = useState(inicioSemana(new Date()));
   const [citaEditando, setCitaEditando] = useState(null);
   const [nuevaFecha, setNuevaFecha] = useState("");
   const [nuevaHora, setNuevaHora] = useState("");
-  
+  const [cargando, setCargando] = useState(false);
 
   async function cargarCitas() {
-    const { data, error } = await supabase
-      .from("citas")
-      .select(`
-        *,
-        pacientes (
-          id,
-          nombres,
-          apellidos,
-          identificador,
-          email,
-          telefono
-        )
-      `)
-      .order("fecha", { ascending: true })
-      .order("hora_inicio", { ascending: true });
-
-    if (error) {
-      alert(error.message);
+    if (!user?.id) {
+      console.warn("AgendaPage: user.id aún no disponible.", user);
+      setCargando(false);
       return;
     }
-
-    const { data: disponibilidadData, error: disponibilidadError } = await supabase
-      .from("disponibilidad_profesional")
-      .select("*")
-      .eq("activo", true);
-
-    if (disponibilidadError) {
-      alert(disponibilidadError.message);
-      return;
+  
+    console.log("AgendaPage - user recibido:", user);
+    console.log("AgendaPage - profesional_id usado:", user.id);
+    console.log("AgendaPage - refreshKey:", refreshKey);
+  
+    setCargando(true);
+  
+    try {
+      const { data, error } = await supabase
+        .from("citas")
+        .select(`
+          *,
+          pacientes (
+            id,
+            nombres,
+            apellidos,
+            identificador,
+            email,
+            telefono
+          )
+        `)
+        .eq("profesional_id", user.id)
+        .order("fecha", { ascending: true })
+        .order("hora_inicio", { ascending: true });
+  
+      if (error) {
+        console.error("AgendaPage - error cargando citas:", error);
+        alert("Error cargando citas: " + error.message);
+        return;
+      }
+  
+      const { data: disponibilidadData, error: disponibilidadError } =
+        await supabase
+          .from("disponibilidad_profesional")
+          .select("*")
+          .eq("profesional_id", user.id)
+          .eq("activo", true);
+  
+      if (disponibilidadError) {
+        console.error(
+          "AgendaPage - error cargando disponibilidad:",
+          disponibilidadError
+        );
+        alert("Error cargando disponibilidad: " + disponibilidadError.message);
+        return;
+      }
+  
+      console.log("AgendaPage - citas encontradas:", data);
+      console.log("AgendaPage - disponibilidad encontrada:", disponibilidadData);
+  
+      setCitas(data || []);
+      setDisponibilidad(disponibilidadData || []);
+    } catch (error) {
+      console.error("AgendaPage - error inesperado:", error);
+      alert("Error inesperado cargando agenda: " + error.message);
+    } finally {
+      setCargando(false);
     }
-
-    setDisponibilidad(disponibilidadData || []);
-
-    setCitas(data || []);
   }
 
   useEffect(() => {
-    cargarCitas();
-  }, []);
+    if (user?.id) {
+      cargarCitas();
+    }
+  }, [user?.id, refreshKey]);
 
   const hoy = fechaTexto(new Date());
 
@@ -127,21 +166,20 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
 
     return citas.filter(
       (cita) =>
-        cita.fecha?.slice(0, 10) === fecha &&
-        cita.estado !== "cancelada"
+        cita.fecha?.slice(0, 10) === fecha && cita.estado !== "cancelada"
     );
   }
 
   function abrirFlujo(cita) {
     iniciarFlujo({
       ...cita,
-  
+
       patient: `${cita.pacientes?.nombres || ""} ${
         cita.pacientes?.apellidos || ""
-      }`,
-  
+      }`.trim(),
+
       paciente_id: cita.paciente_id,
-  
+
       paciente: {
         id: cita.pacientes?.id,
         nombres: cita.pacientes?.nombres,
@@ -160,7 +198,8 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
     const { error } = await supabase
       .from("citas")
       .update({ estado: "cancelada" })
-      .eq("id", cita.id);
+      .eq("id", cita.id)
+      .eq("profesional_id", user.id);
 
     if (error) {
       alert(error.message);
@@ -174,28 +213,29 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
     );
   }
 
-
   function horarioExisteEnDisponibilidad(fecha, hora) {
     const fechaObj = new Date(`${fecha}T00:00:00`);
     const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
     const horaFinNueva = calcularHoraFin(hora, 60);
-  
+
     return disponibilidad.some((item) => {
       const inicio = item.hora_inicio?.slice(0, 5);
       const fin = item.hora_fin?.slice(0, 5);
+
+      if (!inicio || !fin) return false;
+
+      const mismoDia = Number(item.dia_semana) === Number(diaJS);
+      const dentroHora = hora >= inicio && horaFinNueva <= fin;
+
       const fechaInicio = item.fecha_inicio?.slice(0, 10);
       const fechaFin = item.fecha_fin?.slice(0, 10);
-  
-      return (
-        item.dia_semana === diaJS &&
-        fecha >= fechaInicio &&
-        fecha <= fechaFin &&
-        hora >= inicio &&
-        horaFinNueva <= fin
-      );
+
+      const dentroRangoFecha =
+        (!fechaInicio || fecha >= fechaInicio) && (!fechaFin || fecha <= fechaFin);
+
+      return mismoDia && dentroHora && dentroRangoFecha;
     });
   }
-
 
   function existeCitaEnHorario(fecha, hora, citaActualId) {
     return citas.some(
@@ -206,70 +246,72 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
         cita.estado !== "cancelada"
     );
   }
-  
-    function esFechaHoraPasada(fecha, hora) {
+
+  function esFechaHoraPasada(fecha, hora) {
     const ahora = new Date();
     const fechaHora = new Date(`${fecha}T${hora}:00`);
     return fechaHora < ahora;
   }
 
-
   async function guardarReagenda() {
-  if (!citaEditando || !nuevaFecha || !nuevaHora) {
-    alert("Selecciona fecha y hora.");
-    return;
+    if (!citaEditando || !nuevaFecha || !nuevaHora) {
+      alert("Selecciona fecha y hora.");
+      return;
+    }
+
+    if (esFechaHoraPasada(nuevaFecha, nuevaHora)) {
+      alert("No puedes reagendar una cita a una fecha u hora pasada.");
+      return;
+    }
+
+    if (existeCitaEnHorario(nuevaFecha, nuevaHora, citaEditando.id)) {
+      alert("Ese horario ya está reservado. Selecciona otro horario.");
+      return;
+    }
+
+    if (!horarioExisteEnDisponibilidad(nuevaFecha, nuevaHora)) {
+      alert(
+        "El horario seleccionado no está dentro de la disponibilidad configurada."
+      );
+      return;
+    }
+
+    const horaFin = calcularHoraFin(nuevaHora, 60);
+
+    const { error } = await supabase
+      .from("citas")
+      .update({
+        fecha: nuevaFecha,
+        hora_inicio: nuevaHora,
+        hora_fin: horaFin,
+        estado: "reprogramada",
+      })
+      .eq("id", citaEditando.id)
+      .eq("profesional_id", user.id);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setCitas((prev) =>
+      prev.map((item) =>
+        item.id === citaEditando.id
+          ? {
+              ...item,
+              fecha: nuevaFecha,
+              hora_inicio: nuevaHora,
+              hora_fin: horaFin,
+              estado: "reprogramada",
+            }
+          : item
+      )
+    );
+
+    setCitaEditando(null);
+    setNuevaFecha("");
+    setNuevaHora("");
   }
-
-  if (esFechaHoraPasada(nuevaFecha, nuevaHora)) {
-    alert("No puedes reagendar una cita a una fecha u hora pasada.");
-    return;
-  }
-
-  if (existeCitaEnHorario(nuevaFecha, nuevaHora, citaEditando.id)) {
-    alert("Ese horario ya está reservado. Selecciona otro horario.");
-    return;
-  }
-
-  if (!horarioExisteEnDisponibilidad(nuevaFecha, nuevaHora)) {
-    alert("El horario seleccionado no está dentro de la disponibilidad configurada.");
-    return;
-  }
-
-  const horaFin = calcularHoraFin(nuevaHora, 60);
-
-  const { error } = await supabase
-    .from("citas")
-    .update({
-      fecha: nuevaFecha,
-      hora_inicio: nuevaHora,
-      hora_fin: horaFin,
-      estado: "reprogramada",
-    })
-    .eq("id", citaEditando.id);
-
-  if (error) {
-    alert(error.message);
-    return;
-  }
-
-  setCitas((prev) =>
-    prev.map((item) =>
-      item.id === citaEditando.id
-        ? {
-            ...item,
-            fecha: nuevaFecha,
-            hora_inicio: nuevaHora,
-            hora_fin: horaFin,
-            estado: "reprogramada",
-          }
-        : item
-    )
-  );
-
-  setCitaEditando(null);
-  setNuevaFecha("");
-  setNuevaHora("");
-}
 
   function renderCita(cita) {
     return (
@@ -286,7 +328,8 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
         </div>
 
         <p className="font-black text-slate-800">
-          {cita.pacientes?.nombres} {cita.pacientes?.apellidos}
+          {cita.pacientes?.nombres || "Paciente"}{" "}
+          {cita.pacientes?.apellidos || ""}
         </p>
 
         <p className="mt-1 text-xs text-slate-500">
@@ -328,19 +371,26 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
           ← Volver
         </button>
 
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-3xl font-black">Agenda</h1>
             <p className="text-sm text-slate-500">
-              {citas.length} citas registradas
+              {cargando
+                ? "Cargando agenda..."
+                : `${citas.length} citas registradas`}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-400">
+              Profesional ID: {user?.id || "no disponible"}
             </p>
           </div>
 
           <button
             onClick={cargarCitas}
-            className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700"
+            disabled={cargando}
+            className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700 disabled:opacity-50"
           >
-            Actualizar
+            {cargando ? "Actualizando..." : "Actualizar"}
           </button>
         </div>
 
@@ -370,7 +420,9 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
               Hoy - {formatearFecha(hoy)}
             </h2>
 
-            {citasHoy.length === 0 ? (
+            {cargando ? (
+              <p className="text-center text-slate-500">Cargando citas...</p>
+            ) : citasHoy.length === 0 ? (
               <p className="text-center text-slate-500">
                 No hay citas para hoy.
               </p>
@@ -384,7 +436,7 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
 
         {view === "week" && (
           <section className="rounded-[28px] border border-cyan-100 bg-white p-6 shadow">
-            <div className="mb-5 flex items-center justify-between gap-4">
+            <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <button
                 onClick={() => setSemanaBase(sumarDias(semanaBase, -7))}
                 className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
@@ -405,38 +457,44 @@ export default function AgendaPage({ goBack, iniciarFlujo }) {
               </button>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-7">
-              {diasSemana.map((fechaObj) => {
-                const fecha = fechaTexto(fechaObj);
-                const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
-                const citasDia = citasDelDia(fechaObj);
+            {cargando ? (
+              <p className="rounded-2xl bg-slate-50 p-6 text-center text-slate-500">
+                Cargando agenda...
+              </p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-7">
+                {diasSemana.map((fechaObj) => {
+                  const fecha = fechaTexto(fechaObj);
+                  const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+                  const citasDia = citasDelDia(fechaObj);
 
-                return (
-                  <div
-                    key={fecha}
-                    className="min-h-[260px] rounded-2xl border bg-slate-50 p-3"
-                  >
-                    <h3 className="text-center text-lg font-black text-cyan-700">
-                      {dias.find((d) => d.id === dia)?.nombre}
-                    </h3>
+                  return (
+                    <div
+                      key={fecha}
+                      className="min-h-[260px] rounded-2xl border bg-slate-50 p-3"
+                    >
+                      <h3 className="text-center text-lg font-black text-cyan-700">
+                        {dias.find((d) => d.id === dia)?.nombre}
+                      </h3>
 
-                    <p className="mb-3 text-center text-xs text-slate-500">
-                      {formatearFecha(fecha)}
-                    </p>
-
-                    {citasDia.length === 0 ? (
-                      <p className="text-center text-xs text-slate-400">
-                        Sin citas
+                      <p className="mb-3 text-center text-xs text-slate-500">
+                        {formatearFecha(fecha)}
                       </p>
-                    ) : (
-                      <div className="space-y-3">
-                        {citasDia.map((cita) => renderCita(cita))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+
+                      {citasDia.length === 0 ? (
+                        <p className="text-center text-xs text-slate-400">
+                          Sin citas
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          {citasDia.map((cita) => renderCita(cita))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         )}
       </div>

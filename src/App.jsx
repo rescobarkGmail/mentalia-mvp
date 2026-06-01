@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
 
 import LandingPage from "./pages/LandingPage";
@@ -30,21 +30,50 @@ export default function App() {
   const [pacienteActivo, setPacienteActivo] = useState(null);
   const [citaPreSesion, setCitaPreSesion] = useState(null);
 
-  async function obtenerPerfilProfesional(currentUser) {
-    let { data: perfil } = await supabase
-      .from("profesional")
-      .select("*")
-      .eq("id", currentUser.id)
-      .maybeSingle();
+  const [agendaRefreshKey, setAgendaRefreshKey] = useState(0);
 
-    if (!perfil && currentUser.email) {
-      const { data: perfilPorEmail } = await supabase
+  const viewRef = useRef(view);
+  const isLoggedInRef = useRef(isLoggedIn);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    isLoggedInRef.current = isLoggedIn;
+  }, [isLoggedIn]);
+
+  async function obtenerPerfilProfesional(currentUser) {
+    if (!currentUser?.id && !currentUser?.email) return null;
+
+    let perfil = null;
+
+    if (currentUser?.id) {
+      const { data, error } = await supabase
+        .from("profesional")
+        .select("*")
+        .eq("id", currentUser.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Error buscando profesional por id:", error);
+      }
+
+      perfil = data;
+    }
+
+    if (!perfil && currentUser?.email) {
+      const { data, error } = await supabase
         .from("profesional")
         .select("*")
         .eq("email", currentUser.email)
         .maybeSingle();
 
-      perfil = perfilPorEmail;
+      if (error) {
+        console.error("Error buscando profesional por email:", error);
+      }
+
+      perfil = data;
     }
 
     return perfil;
@@ -53,46 +82,114 @@ export default function App() {
   function construirUsuarioOperativo(currentUser, perfil) {
     return {
       ...currentUser,
+
+      // Este es el ID que debe usar Mentalia para consultar:
+      // citas, disponibilidad, pacientes, sesiones, configuración, etc.
       id: perfil?.id || currentUser.id,
+
+      // Este queda como referencia del usuario autenticado en Supabase Auth.
       auth_id: currentUser.id,
+
       email: currentUser.email,
     };
   }
 
-  async function aplicarSesion(currentUser, selectedProvider = "Google") {
+  async function aplicarSesion(
+    currentUser,
+    selectedProvider = "Google",
+    opciones = { redirigir: true }
+  ) {
+    if (!currentUser) return;
+
     const perfil = await obtenerPerfilProfesional(currentUser);
     const usuarioOperativo = construirUsuarioOperativo(currentUser, perfil);
+
+    console.log("App - currentUser auth:", currentUser);
+    console.log("App - perfil profesional:", perfil);
+    console.log("App - usuario operativo:", usuarioOperativo);
 
     setUser(usuarioOperativo);
     setProfile(perfil);
     setProvider(selectedProvider);
     setIsLoggedIn(true);
 
+    const debeRedirigir = opciones?.redirigir !== false;
+
+    if (!debeRedirigir) return;
+
+    const vistaActual = viewRef.current;
+
+    const vistasDeEntrada = ["landing", "login"];
+
     if (!perfil?.nombres || !perfil?.apellidos) {
       setView("profile");
-    } else {
+      return;
+    }
+
+    if (vistasDeEntrada.includes(vistaActual)) {
       setView("dashboard");
     }
   }
 
   useEffect(() => {
-    async function recuperarSesion() {
-      const { data } = await supabase.auth.getSession();
+    async function recuperarSesionInicial() {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+        console.error("Error recuperando sesión:", error);
+        setIsLoggedIn(false);
+        setView("login");
+        return;
+      }
+
       const session = data?.session;
 
-      if (!session?.user) return;
+      if (!session?.user) {
+        setIsLoggedIn(false);
+        setView("landing");
+        return;
+      }
 
-      await aplicarSesion(session.user, "Google");
+      await aplicarSesion(session.user, "Google", { redirigir: true });
     }
 
-    recuperarSesion();
+    recuperarSesionInicial();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!session?.user) return;
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("App - onAuthStateChange:", event);
 
-      await aplicarSesion(session.user, "Google");
+      if (!session?.user) {
+        if (event === "SIGNED_OUT") {
+          setIsLoggedIn(false);
+          setView("login");
+          setSelectedPatient(null);
+          setUser(null);
+          setProfile(null);
+          setCitaActiva(null);
+          setPacienteActivo(null);
+          setCitaPreSesion(null);
+        }
+
+        return;
+      }
+
+      if (event === "SIGNED_IN") {
+        await aplicarSesion(session.user, "Google", { redirigir: true });
+        return;
+      }
+
+      if (event === "INITIAL_SESSION") {
+        if (!isLoggedInRef.current) {
+          await aplicarSesion(session.user, "Google", { redirigir: true });
+        }
+        return;
+      }
+
+      // Para eventos como TOKEN_REFRESHED o USER_UPDATED no cambiamos la vista.
+      // Solo refrescamos user/profile sin mandar al dashboard.
+      await aplicarSesion(session.user, "Google", { redirigir: false });
     });
 
     return () => {
@@ -110,7 +207,7 @@ export default function App() {
       return;
     }
 
-    await aplicarSesion(userData.user, selectedProvider);
+    await aplicarSesion(userData.user, selectedProvider, { redirigir: true });
   }
 
   async function handleLogout() {
@@ -141,6 +238,11 @@ export default function App() {
     setView("sesion-clinica");
   }
 
+  function volverDashboardDesdeReserva() {
+    setAgendaRefreshKey((actual) => actual + 1);
+    setView("dashboard");
+  }
+
   if (view === "landing") {
     return <LandingPage goToApp={() => setView("login")} />;
   }
@@ -161,6 +263,8 @@ export default function App() {
   if (view === "agenda") {
     return (
       <AgendaPage
+        user={user}
+        refreshKey={agendaRefreshKey}
         goBack={() => setView("dashboard")}
         iniciarFlujo={iniciarFlujo}
       />
@@ -272,7 +376,10 @@ export default function App() {
     return (
       <ReservarHoraPage
         profesionalId={user?.id}
-        goBack={() => setView("dashboard")}
+        goBack={volverDashboardDesdeReserva}
+        onReservaExitosa={() => {
+          setAgendaRefreshKey((actual) => actual + 1);
+        }}
       />
     );
   }

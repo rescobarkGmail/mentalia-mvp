@@ -108,7 +108,10 @@ export default function DashboardPage({
             <SidebarButton
               icon={<CalendarDays size={20} />}
               label="Reserva pública"
-              onClick={goReservar}
+              onClick={() => {
+                console.log("DashboardPage: click en Reserva pública");
+                goReservar?.();
+              }}
             />
 
             <SidebarButton
