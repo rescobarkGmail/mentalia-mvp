@@ -4,6 +4,18 @@ import BrainLogo from "../components/BrainLogo";
 import LoginButton from "../components/LoginButton";
 import { supabase } from "../lib/supabaseClient";
 
+/*
+  Fase 1:
+  Solo acceso con Gmail.
+
+  Fase 2:
+  Cambiar estas constantes a true cuando queramos habilitar:
+  - autenticación propia Mental-IA
+  - Microsoft
+*/
+const SHOW_EMAIL_LOGIN = false;
+const SHOW_MICROSOFT_LOGIN = false;
+
 function MicrosoftLogo() {
   return (
     <div className="grid h-4 w-4 grid-cols-2 grid-rows-2 gap-[1px]">
@@ -19,15 +31,6 @@ function GoogleLogo() {
   return <span className="text-xl font-black text-[#4285F4]">G</span>;
 }
 
-function conTimeout(promesa, ms, mensaje) {
-  return Promise.race([
-    promesa,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(mensaje)), ms)
-    ),
-  ]);
-}
-
 export default function LoginPage() {
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState("");
@@ -36,7 +39,7 @@ export default function LoginPage() {
   const [modalMessage, setModalMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleAuth() {
+  async function handleEmailAuth() {
     if (!email || !password) {
       setModalMessage("Ingresa correo y contraseña.");
       return;
@@ -45,20 +48,11 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      console.log("Login email - inicio");
-      console.log("Supabase URL:", import.meta.env.VITE_SUPABASE_URL);
-
       if (isRegister) {
-        const { data, error } = await conTimeout(
-          supabase.auth.signUp({
-            email,
-            password,
-          }),
-          15000,
-          "Tiempo agotado al registrar usuario."
-        );
-
-        console.log("Registro - respuesta:", { data, error });
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+        });
 
         if (error) {
           setModalMessage(error.message);
@@ -66,17 +60,15 @@ export default function LoginPage() {
         }
 
         if (data?.user) {
-          const { error: insertError } = await conTimeout(
-            supabase.from("profesional").insert([
+          const { error: insertError } = await supabase
+            .from("profesional")
+            .insert([
               {
                 id: data.user.id,
                 email: data.user.email,
                 vigente: true,
               },
-            ]),
-            15000,
-            "Tiempo agotado al crear perfil profesional."
-          );
+            ]);
 
           if (insertError) {
             setModalMessage(
@@ -91,16 +83,10 @@ export default function LoginPage() {
         return;
       }
 
-      const { data, error } = await conTimeout(
-        supabase.auth.signInWithPassword({
-          email,
-          password,
-        }),
-        15000,
-        "Tiempo agotado al iniciar sesión con correo y contraseña."
-      );
-
-      console.log("Login email - respuesta:", { data, error });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
       if (error) {
         setModalMessage(error.message);
@@ -114,12 +100,10 @@ export default function LoginPage() {
         return;
       }
 
-      console.log("Login email - usuario autenticado:", data.session.user);
-
       window.location.replace(window.location.origin);
     } catch (error) {
-      console.error("Error en login email:", error);
-      setModalMessage(error.message || "Ocurrió un error al iniciar sesión.");
+      console.error("Error inesperado en login email:", error);
+      setModalMessage("Ocurrió un error inesperado al iniciar sesión.");
     } finally {
       setLoading(false);
     }
@@ -129,9 +113,6 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      console.log("Login Google - inicio");
-      console.log("Supabase URL:", import.meta.env.VITE_SUPABASE_URL);
-
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -164,68 +145,77 @@ export default function LoginPage() {
             DEMO - Prototipo de Sistema de Apoyo Documental
           </p>
 
-          <div className="mt-6 space-y-3">
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              placeholder="Correo"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={loading}
-              className="w-full rounded-xl border border-cyan-100 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100"
-            />
+          {SHOW_EMAIL_LOGIN && (
+            <div className="mt-6 space-y-3">
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                placeholder="Correo"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={loading}
+                className="w-full rounded-xl border border-cyan-100 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100"
+              />
 
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              placeholder="Contraseña"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loading}
-              className="w-full rounded-xl border border-cyan-100 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100"
-            />
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Contraseña"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loading}
+                className="w-full rounded-xl border border-cyan-100 px-4 py-3 outline-none focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100"
+              />
 
-            <button
-              type="button"
-              onClick={handleAuth}
-              disabled={loading}
-              className="w-full rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loading
-                ? "Procesando..."
-                : isRegister
-                ? "Registrarse"
-                : "Ingresar"}
-            </button>
+              <button
+                type="button"
+                onClick={handleEmailAuth}
+                disabled={loading}
+                className="w-full rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading
+                  ? "Procesando..."
+                  : isRegister
+                  ? "Registrarse"
+                  : "Ingresar"}
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setIsRegister((actual) => !actual)}
-              disabled={loading}
-              className="w-full text-sm font-bold text-cyan-700 disabled:opacity-60"
-            >
-              {isRegister ? "Ya tengo cuenta" : "Crear cuenta"}
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => setIsRegister((actual) => !actual)}
+                disabled={loading}
+                className="w-full text-sm font-bold text-cyan-700 disabled:opacity-60"
+              >
+                {isRegister ? "Ya tengo cuenta" : "Crear cuenta"}
+              </button>
+            </div>
+          )}
 
-          <div className="mt-6 space-y-3 border-t pt-6">
+          <div className="mt-8 space-y-3">
             <LoginButton
-              provider="Ingresar con Microsoft"
-              icon={<MicrosoftLogo />}
-              onClick={() =>
-                setModalMessage("El acceso con Microsoft aún no está habilitado.")
-              }
-            />
-
-            <LoginButton
-              provider="Ingresar con Google"
+              provider={loading ? "Conectando con Google..." : "Ingresar con Gmail"}
               icon={<GoogleLogo />}
               onClick={handleGoogleLogin}
             />
+
+            {SHOW_MICROSOFT_LOGIN && (
+              <LoginButton
+                provider="Ingresar con Microsoft"
+                icon={<MicrosoftLogo />}
+                onClick={() =>
+                  setModalMessage("El acceso con Microsoft estará disponible en una segunda fase.")
+                }
+              />
+            )}
+
+            <p className="text-center text-xs leading-5 text-slate-500">
+              Acceso seguro mediante cuenta Google. Mental-IA no administra tu
+              contraseña en esta fase del MVP.
+            </p>
           </div>
         </div>
       </motion.section>
