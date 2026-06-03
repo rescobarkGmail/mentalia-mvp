@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { formatearFecha } from "../utils/formato";
+import {
+  obtenerAccessTokenGoogleCalendar,
+  obtenerEventosDelDia,
+} from "../lib/googleCalendarClient";
 
 const dias = [
   { id: 1, nombre: "Lunes" },
@@ -77,19 +81,23 @@ export default function AgendaPage({
   const [nuevaHora, setNuevaHora] = useState("");
   const [cargando, setCargando] = useState(false);
 
+  const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
+  const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
+  const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
+
   async function cargarCitas() {
     if (!user?.id) {
       console.warn("AgendaPage: user.id aún no disponible.", user);
       setCargando(false);
       return;
     }
-  
+
     console.log("AgendaPage - user recibido:", user);
     console.log("AgendaPage - profesional_id usado:", user.id);
     console.log("AgendaPage - refreshKey:", refreshKey);
-  
+
     setCargando(true);
-  
+
     try {
       const { data, error } = await supabase
         .from("citas")
@@ -107,20 +115,20 @@ export default function AgendaPage({
         .eq("profesional_id", user.id)
         .order("fecha", { ascending: true })
         .order("hora_inicio", { ascending: true });
-  
+
       if (error) {
         console.error("AgendaPage - error cargando citas:", error);
         alert("Error cargando citas: " + error.message);
         return;
       }
-  
+
       const { data: disponibilidadData, error: disponibilidadError } =
         await supabase
           .from("disponibilidad_profesional")
           .select("*")
           .eq("profesional_id", user.id)
           .eq("activo", true);
-  
+
       if (disponibilidadError) {
         console.error(
           "AgendaPage - error cargando disponibilidad:",
@@ -129,10 +137,10 @@ export default function AgendaPage({
         alert("Error cargando disponibilidad: " + disponibilidadError.message);
         return;
       }
-  
+
       console.log("AgendaPage - citas encontradas:", data);
       console.log("AgendaPage - disponibilidad encontrada:", disponibilidadData);
-  
+
       setCitas(data || []);
       setDisponibilidad(disponibilidadData || []);
     } catch (error) {
@@ -231,7 +239,8 @@ export default function AgendaPage({
       const fechaFin = item.fecha_fin?.slice(0, 10);
 
       const dentroRangoFecha =
-        (!fechaInicio || fecha >= fechaInicio) && (!fechaFin || fecha <= fechaFin);
+        (!fechaInicio || fecha >= fechaInicio) &&
+        (!fechaFin || fecha <= fechaFin);
 
       return mismoDia && dentroHora && dentroRangoFecha;
     });
@@ -313,6 +322,77 @@ export default function AgendaPage({
     setNuevaHora("");
   }
 
+  async function cargarAgendaDesdeGoogleCalendar() {
+    setCargandoGoogleCalendar(true);
+    setErrorGoogleCalendar("");
+
+    try {
+      const accessToken = await obtenerAccessTokenGoogleCalendar();
+
+      const eventos = await obtenerEventosDelDia({
+        accessToken,
+        fecha: new Date(),
+      });
+
+      setEventosGoogleCalendar(eventos);
+
+      console.log("Eventos Google Calendar:", eventos);
+    } catch (error) {
+      console.error("Error al cargar Google Calendar:", error);
+
+      setErrorGoogleCalendar(
+        `No se pudo cargar la agenda desde Google Calendar. Detalle: ${
+          error.message || "Error desconocido"
+        }`
+      );
+    } finally {
+      setCargandoGoogleCalendar(false);
+    }
+  }
+
+  function renderEventoGoogleCalendar(evento) {
+    return (
+      <div
+        key={evento.id}
+        className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm"
+      >
+        <div className="mb-2 flex flex-col items-start gap-2">
+          <span className="text-lg font-black text-blue-700">
+            {evento.hora_inicio || "Todo el día"}
+            {evento.hora_fin ? ` - ${evento.hora_fin}` : ""}
+          </span>
+
+          <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-[10px] font-bold uppercase text-blue-700">
+            Google Calendar
+          </span>
+        </div>
+
+        <p className="font-black text-slate-800">
+          {evento.titulo || "Evento sin título"}
+        </p>
+
+        {evento.ubicacion && (
+          <p className="mt-1 text-xs text-slate-500">{evento.ubicacion}</p>
+        )}
+
+        <p className="mt-2 text-xs text-slate-400">
+          ID evento: {evento.google_calendar_event_id}
+        </p>
+
+        {evento.link_google_calendar && (
+          <a
+            href={evento.link_google_calendar}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 block text-sm font-bold text-blue-600 hover:underline"
+          >
+            Ver en Google Calendar
+          </a>
+        )}
+      </div>
+    );
+  }
+
   function renderCita(cita) {
     return (
       <div
@@ -374,10 +454,11 @@ export default function AgendaPage({
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-3xl font-black">Agenda</h1>
+
             <p className="text-sm text-slate-500">
               {cargando
                 ? "Cargando agenda..."
-                : `${citas.length} citas registradas`}
+                : `${citas.length} citas registradas en Mentalia`}
             </p>
 
             <p className="mt-1 text-xs text-slate-400">
@@ -385,14 +466,58 @@ export default function AgendaPage({
             </p>
           </div>
 
-          <button
-            onClick={cargarCitas}
-            disabled={cargando}
-            className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700 disabled:opacity-50"
-          >
-            {cargando ? "Actualizando..." : "Actualizar"}
-          </button>
+          <div className="flex flex-col gap-2 md:flex-row">
+            <button
+              onClick={cargarAgendaDesdeGoogleCalendar}
+              disabled={cargandoGoogleCalendar}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {cargandoGoogleCalendar
+                ? "Cargando Google Calendar..."
+                : "Cargar agenda desde Google Calendar"}
+            </button>
+
+            <button
+              onClick={cargarCitas}
+              disabled={cargando}
+              className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700 disabled:opacity-50"
+            >
+              {cargando ? "Actualizando..." : "Actualizar Mentalia"}
+            </button>
+          </div>
         </div>
+
+        {errorGoogleCalendar && (
+          <div className="mb-6 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-semibold text-red-700">
+            {errorGoogleCalendar}
+          </div>
+        )}
+
+        {eventosGoogleCalendar.length > 0 && (
+          <section className="mb-6 rounded-[28px] border border-blue-100 bg-blue-50 p-6 shadow">
+            <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h2 className="text-xl font-black text-blue-900">
+                  Eventos desde Google Calendar
+                </h2>
+
+                <p className="text-sm text-blue-700">
+                  Eventos de hoy cargados en modo solo lectura.
+                </p>
+              </div>
+
+              <p className="text-xs font-bold text-blue-700">
+                {eventosGoogleCalendar.length} evento(s)
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {eventosGoogleCalendar.map((evento) =>
+                renderEventoGoogleCalendar(evento)
+              )}
+            </div>
+          </section>
+        )}
 
         <div className="mb-6 flex rounded-full bg-cyan-100 p-1">
           <button
@@ -424,7 +549,7 @@ export default function AgendaPage({
               <p className="text-center text-slate-500">Cargando citas...</p>
             ) : citasHoy.length === 0 ? (
               <p className="text-center text-slate-500">
-                No hay citas para hoy.
+                No hay citas para hoy en Mentalia.
               </p>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
