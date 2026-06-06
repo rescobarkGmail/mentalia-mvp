@@ -1,5 +1,5 @@
-const CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar.readonly";
-
+/*const CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar.readonly";*/
+const CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar.events";
 const TOKEN_KEY = "mentalia_google_calendar_access_token";
 const TOKEN_EXPIRES_KEY = "mentalia_google_calendar_token_expira_en";
 
@@ -247,4 +247,51 @@ function extraerHoraDesdeFechaISO(fechaISO) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+export async function actualizarEventoGoogleCalendar({
+  accessToken,
+  eventId,
+  calendarId = "primary",
+  summary,
+  description,
+}) {
+  if (!accessToken) {
+    throw new Error("Falta accessToken para actualizar Google Calendar.");
+  }
+
+  if (!eventId) {
+    throw new Error("Falta eventId para actualizar Google Calendar.");
+  }
+
+  const body = {};
+
+  if (summary) {
+    body.summary = summary;
+  }
+
+  if (description) {
+    body.description = description;
+  }
+
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      calendarId
+    )}/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error);
+  }
+
+  return response.json();
 }
