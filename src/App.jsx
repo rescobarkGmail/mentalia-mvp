@@ -17,7 +17,42 @@ import SesionClinicaPage from "./pages/SesionClinicaPage";
 import FichaClinicaPage from "./pages/FichaClinicaPage";
 import ConfiguracionPage from "./pages/ConfiguracionPage";
 
+
+function obtenerReservaPublicaDesdeUrl() {
+  if (typeof window === "undefined") {
+    return { esReservaPublica: false, slugProfesional: "", profesionalId: "" };
+  }
+
+  const url = new URL(window.location.href);
+  const partes = url.pathname.split("/").filter(Boolean);
+  const esRutaReservar = partes[0] === "reservar";
+  const viewParam = url.searchParams.get("view");
+  const esQueryReservar = viewParam === "reservar";
+
+  if (!esRutaReservar && !esQueryReservar) {
+    return { esReservaPublica: false, slugProfesional: "", profesionalId: "" };
+  }
+
+  const slugProfesional =
+    (esRutaReservar && partes[1] ? decodeURIComponent(partes[1]) : "") ||
+    url.searchParams.get("slug") ||
+    url.searchParams.get("profesional") ||
+    "";
+
+  const profesionalId =
+    url.searchParams.get("profesional_id") ||
+    url.searchParams.get("id_profesional") ||
+    "";
+
+  return {
+    esReservaPublica: true,
+    slugProfesional: slugProfesional.trim().toLowerCase(),
+    profesionalId: profesionalId.trim(),
+  };
+}
+
 export default function App() {
+  const reservaPublica = obtenerReservaPublicaDesdeUrl();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [provider, setProvider] = useState("Google");
   const [view, setView] = useState("landing");
@@ -241,6 +276,17 @@ export default function App() {
   function volverDashboardDesdeReserva() {
     setAgendaRefreshKey((actual) => actual + 1);
     setView("dashboard");
+  }
+
+
+  if (reservaPublica.esReservaPublica) {
+    return (
+      <ReservarHoraPage
+        modoPublico={true}
+        slugProfesional={reservaPublica.slugProfesional}
+        profesionalId={reservaPublica.profesionalId}
+      />
+    );
   }
 
   if (view === "landing") {

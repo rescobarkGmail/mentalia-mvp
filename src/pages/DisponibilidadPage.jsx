@@ -1,16 +1,29 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { formatearFecha } from "../utils/formato";
+import {
+  obtenerAccessTokenGoogleCalendar,
+  obtenerEventosDeLaSemana,
+} from "../lib/googleCalendarClient";
 
 const dias = [
-  { id: 1, nombre: "Lunes" },
-  { id: 2, nombre: "Martes" },
-  { id: 3, nombre: "Miércoles" },
-  { id: 4, nombre: "Jueves" },
-  { id: 5, nombre: "Viernes" },
-  { id: 6, nombre: "Sábado" },
-  { id: 7, nombre: "Domingo" },
+  { id: 1, nombre: "Lunes", corto: "Lun" },
+  { id: 2, nombre: "Martes", corto: "Mar" },
+  { id: 3, nombre: "Miércoles", corto: "Mié" },
+  { id: 4, nombre: "Jueves", corto: "Jue" },
+  { id: 5, nombre: "Viernes", corto: "Vie" },
+  { id: 6, nombre: "Sábado", corto: "Sáb" },
+  { id: 7, nombre: "Domingo", corto: "Dom" },
 ];
+
+const TABLA_DISPONIBILIDAD = "disponibilidad_profesional";
+const TABLA_RESERVAS_LEGACY = "citas";
+const ORIGEN_DISPONIBILIDAD = "google_calendar";
+
+function esErrorColumnaOrigen(error) {
+  const texto = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`.toLowerCase();
+  return texto.includes("origen") && texto.includes("does not exist");
+}
 
 function fechaTexto(fecha) {
   const year = fecha.getFullYear();
@@ -21,21 +34,24 @@ function fechaTexto(fecha) {
 
 function inicioSemana(fechaBase) {
   const fecha = new Date(fechaBase);
+  fecha.setHours(0, 0, 0, 0);
+
   const dia = fecha.getDay() === 0 ? 7 : fecha.getDay();
   fecha.setDate(fecha.getDate() - dia + 1);
+
   return fecha;
 }
 
-function sumarDias(fecha, dias) {
+function sumarDias(fecha, cantidadDias) {
   const nueva = new Date(fecha);
-  nueva.setDate(nueva.getDate() + dias);
+  nueva.setDate(nueva.getDate() + cantidadDias);
   return nueva;
 }
 
 function generarSlots(horaInicio, horaFin, duracion) {
   const slots = [];
-  const [hi, mi] = horaInicio.split(":").map(Number);
-  const [hf, mf] = horaFin.split(":").map(Number);
+  const [hi, mi] = horaInicio.slice(0, 5).split(":").map(Number);
+  const [hf, mf] = horaFin.slice(0, 5).split(":").map(Number);
 
   let actual = new Date();
   actual.setHours(hi, mi, 0, 0);
@@ -44,11 +60,38 @@ function generarSlots(horaInicio, horaFin, duracion) {
   fin.setHours(hf, mf, 0, 0);
 
   while (actual < fin) {
-    slots.push(actual.toTimeString().slice(0, 5));
-    actual = new Date(actual.getTime() + Number(duracion) * 60000);
+    const siguiente = new Date(actual.getTime() + Number(duracion) * 60000);
+
+    if (siguiente <= fin) {
+      slots.push({
+        hora_inicio: actual.toTimeString().slice(0, 5),
+        hora_fin: siguiente.toTimeString().slice(0, 5),
+      });
+    }
+
+    actual = siguiente;
   }
 
   return slots;
+}
+
+function crearFechaHora(fecha, hora) {
+  return new Date(`${fecha}T${hora}:00`);
+}
+
+function hayCruceHorario(inicioA, finA, inicioB, finB) {
+  return inicioA < finB && finA > inicioB;
+}
+
+function obtenerNombreDia(id) {
+  return dias.find((dia) => dia.id === Number(id))?.nombre || "Día";
+}
+
+function nombreDiasSeleccionados(ids) {
+  return dias
+    .filter((dia) => ids.includes(dia.id))
+    .map((dia) => dia.corto)
+    .join(", ");
 }
 
 export default function DisponibilidadPage({ user, goBack }) {
@@ -56,16 +99,21 @@ export default function DisponibilidadPage({ user, goBack }) {
 
   const [items, setItems] = useState([]);
   const [citas, setCitas] = useState([]);
+  const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
   const [semanaBase, setSemanaBase] = useState(inicioSemana(new Date()));
 
-  const [diaSemana, setDiaSemana] = useState("");
+  const [diasSeleccionados, setDiasSeleccionados] = useState([]);
   const [horaInicio, setHoraInicio] = useState("");
   const [horaFin, setHoraFin] = useState("");
-  const [duracion, setDuracion] = useState("");
-  const [fechaInicio, setFechaInicio] = useState("");
+  const [duracion, setDuracion] = useState("60");
+  const [fechaInicio, setFechaInicio] = useState(hoy);
   const [fechaFin, setFechaFin] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
+
+  const [cargandoDatos, setCargandoDatos] = useState(false);
+  const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
+  const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
 
   const [modal, setModal] = useState({
     visible: false,
@@ -73,80 +121,259 @@ export default function DisponibilidadPage({ user, goBack }) {
     message: "",
   });
 
+  const diasSemana = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => sumarDias(semanaBase, i)),
+    [semanaBase]
+  );
+
+  const finSemana = sumarDias(semanaBase, 6);
+
   function mostrarModal(title, message) {
     setModal({ visible: true, title, message });
   }
 
   async function cargar() {
-    const { data: disponibilidad } = await supabase
-      .from("disponibilidad_profesional")
-      .select("*")
-      .order("dia_semana", { ascending: true })
-      .order("hora_inicio", { ascending: true });
+    if (!user?.id) return;
 
-    const { data: citasData } = await supabase
-      .from("citas")
-      .select("*")
-      .order("fecha", { ascending: true })
-      .order("hora_inicio", { ascending: true });
+    setCargandoDatos(true);
 
-    setItems(disponibilidad || []);
-    setCitas(citasData || []);
+    try {
+      const { data: disponibilidad, error: disponibilidadError } = await supabase
+        .from(TABLA_DISPONIBILIDAD)
+        .select("*")
+        .eq("profesional_id", user.id)
+        .eq("origen", ORIGEN_DISPONIBILIDAD)
+        .order("dia_semana", { ascending: true })
+        .order("hora_inicio", { ascending: true })
+        .order("fecha_crea", { ascending: false });
+
+      if (disponibilidadError) {
+        if (esErrorColumnaOrigen(disponibilidadError)) {
+          mostrarModal(
+            "Falta migración de base de datos",
+            "La tabla disponibilidad_profesional todavía no tiene el campo origen. Ejecuta primero el script SQL de migración y luego vuelve a cargar esta página."
+          );
+          return;
+        }
+
+        mostrarModal("Error", disponibilidadError.message);
+        return;
+      }
+
+      const { data: citasData, error: citasError } = await supabase
+        .from(TABLA_RESERVAS_LEGACY)
+        .select("*")
+        .eq("profesional_id", user.id)
+        .order("fecha", { ascending: true })
+        .order("hora_inicio", { ascending: true });
+
+      if (citasError) {
+        mostrarModal("Error", citasError.message);
+        return;
+      }
+
+      setItems(disponibilidad || []);
+      setCitas(citasData || []);
+    } catch (error) {
+      mostrarModal("Error", error.message || "No se pudieron cargar los datos.");
+    } finally {
+      setCargandoDatos(false);
+    }
   }
 
+  async function cargarEventosGoogleCalendar(fechaReferencia = semanaBase) {
+    setCargandoGoogleCalendar(true);
+    setErrorGoogleCalendar("");
+
+    try {
+      const accessToken = await obtenerAccessTokenGoogleCalendar();
+      const eventos = await obtenerEventosDeLaSemana({
+        accessToken,
+        fechaReferencia,
+      });
+
+      setEventosGoogleCalendar(eventos || []);
+    } catch (error) {
+      console.error("Error cargando Google Calendar:", error);
+      setErrorGoogleCalendar(
+        `No se pudo leer Google Calendar. Detalle: ${
+          error.message || "Error desconocido"
+        }`
+      );
+    } finally {
+      setCargandoGoogleCalendar(false);
+    }
+  }
+
+  useEffect(() => {
+    if (user?.id) cargar();
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user?.id) cargarEventosGoogleCalendar(semanaBase);
+  }, [user?.id, semanaBase]);
+
   function resetFormulario() {
-    setDiaSemana("");
+    setDiasSeleccionados([]);
     setHoraInicio("");
     setHoraFin("");
-    setDuracion("");
-    setFechaInicio("");
+    setDuracion("60");
+    setFechaInicio(hoy);
     setFechaFin("");
     setEditandoId(null);
+  }
+
+  function toggleDia(id) {
+    if (editandoId) return;
+
+    setDiasSeleccionados((prev) =>
+      prev.includes(id) ? prev.filter((dia) => dia !== id) : [...prev, id].sort()
+    );
+  }
+
+  function seleccionarDias(ids) {
+    if (editandoId) return;
+    setDiasSeleccionados(ids);
+  }
+
+  function estaReservadoEnCitas(fecha, horaInicioSlot) {
+    return citas.some((cita) => {
+      const fechaCita = cita.fecha?.slice(0, 10);
+      const horaCita = cita.hora_inicio?.slice(0, 5);
+
+      return (
+        fechaCita === fecha &&
+        horaCita === horaInicioSlot &&
+        cita.estado !== "cancelada"
+      );
+    });
+  }
+
+  function eventoGoogleQueBloquea(fecha, horaInicioSlot, horaFinSlot) {
+    const inicioSlot = crearFechaHora(fecha, horaInicioSlot);
+    const finSlot = crearFechaHora(fecha, horaFinSlot);
+
+    return eventosGoogleCalendar.find((evento) => {
+      if (!evento.fecha_inicio || !evento.fecha_fin) return false;
+      if (evento.estado_google === "cancelled") return false;
+
+      const inicioEvento = new Date(evento.fecha_inicio);
+      const finEvento = new Date(evento.fecha_fin);
+
+      if (Number.isNaN(inicioEvento.getTime()) || Number.isNaN(finEvento.getTime())) {
+        return false;
+      }
+
+      return hayCruceHorario(inicioSlot, finSlot, inicioEvento, finEvento);
+    });
+  }
+
+  function eventosGoogleDelDia(fecha) {
+    return eventosGoogleCalendar
+      .filter((evento) => {
+        if (!evento.fecha_inicio) return false;
+        if (evento.estado_google === "cancelled") return false;
+
+        const inicioEvento = new Date(evento.fecha_inicio);
+        if (Number.isNaN(inicioEvento.getTime())) return false;
+
+        return fechaTexto(inicioEvento) === fecha;
+      })
+      .sort((a, b) => String(a.hora_inicio || "").localeCompare(String(b.hora_inicio || "")));
+  }
+
+  function slotsDelDia(fechaObj) {
+    const fecha = fechaTexto(fechaObj);
+    const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+
+    const reglas = items.filter((item) => {
+      const activo = item.activo === undefined || item.activo === null || item.activo === true;
+      const origen = item.origen || "mentalia_legacy";
+
+      return (
+        activo &&
+        origen === ORIGEN_DISPONIBILIDAD &&
+        Number(item.dia_semana) === Number(diaJS) &&
+        item.fecha_inicio <= fecha &&
+        item.fecha_fin >= fecha
+      );
+    });
+
+    const slots = [];
+
+    reglas.forEach((regla) => {
+      generarSlots(regla.hora_inicio, regla.hora_fin, regla.duracion_minutos).forEach((slot) => {
+        const eventoGoogle = eventoGoogleQueBloquea(fecha, slot.hora_inicio, slot.hora_fin);
+        const reservadoInterno = estaReservadoEnCitas(fecha, slot.hora_inicio);
+
+        slots.push({
+          fecha,
+          hora_inicio: slot.hora_inicio,
+          hora_fin: slot.hora_fin,
+          regla_id: regla.id,
+          duracion_minutos: regla.duracion_minutos,
+          estado: eventoGoogle || reservadoInterno ? "ocupado" : "disponible",
+          motivo_ocupado: eventoGoogle ? "google_calendar" : reservadoInterno ? "mentalia" : null,
+          eventoGoogle,
+        });
+      });
+    });
+
+    return slots.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
   }
 
   function tieneReservasVigentes(item) {
     return citas.some((cita) => {
       const fechaCita = cita.fecha?.slice(0, 10);
       const horaCita = cita.hora_inicio?.slice(0, 5);
-  
+
+      if (!fechaCita || !horaCita) return false;
+
+      const fechaObj = new Date(`${fechaCita}T00:00:00`);
+      const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+
       const mismaRegla =
         fechaCita >= item.fecha_inicio &&
         fechaCita <= item.fecha_fin &&
         horaCita >= item.hora_inicio.slice(0, 5) &&
         horaCita < item.hora_fin.slice(0, 5) &&
         cita.estado !== "cancelada";
-  
-      const fechaObj = new Date(fechaCita + "T00:00:00");
-      const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
-  
-      return mismaRegla && diaJS === item.dia_semana;
+
+      return mismaRegla && diaJS === Number(item.dia_semana);
     });
   }
 
   function editar(item) {
-  if (tieneReservasVigentes(item)) {
-    mostrarModal(
-      "No se puede modificar",
-      "Esta disponibilidad tiene reservas vigentes. Para modificarla, primero debes cancelar o reagendar las citas asociadas."
-    );
-    return;
-  }
+    if (tieneReservasVigentes(item)) {
+      mostrarModal(
+        "No se puede modificar",
+        "Esta disponibilidad tiene reservas vigentes. Para modificarla, primero debes cancelar o reagendar las citas asociadas."
+      );
+      return;
+    }
 
-  setEditandoId(item.id);
-  setDiaSemana(String(item.dia_semana));
-  setHoraInicio(item.hora_inicio.slice(0, 5));
-  setHoraFin(item.hora_fin.slice(0, 5));
-  setDuracion(String(item.duracion_minutos));
-  setFechaInicio(item.fecha_inicio);
-  setFechaFin(item.fecha_fin);
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
+    setEditandoId(item.id);
+    setDiasSeleccionados([Number(item.dia_semana)]);
+    setHoraInicio(item.hora_inicio.slice(0, 5));
+    setHoraFin(item.hora_fin.slice(0, 5));
+    setDuracion(String(item.duracion_minutos));
+    setFechaInicio(item.fecha_inicio);
+    setFechaFin(item.fecha_fin);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function guardar() {
     if (guardando) return;
 
-    if (!diaSemana || !fechaInicio || !fechaFin || !horaInicio || !horaFin || !duracion) {
-      mostrarModal("Campos incompletos", "Completa todos los campos de disponibilidad.");
+    if (
+      diasSeleccionados.length === 0 ||
+      !fechaInicio ||
+      !fechaFin ||
+      !horaInicio ||
+      !horaFin ||
+      !duracion
+    ) {
+      mostrarModal("Campos incompletos", "Selecciona al menos un día y completa todos los campos de disponibilidad.");
       return;
     }
 
@@ -162,61 +389,72 @@ export default function DisponibilidadPage({ user, goBack }) {
 
     setGuardando(true);
 
-    const payload = {
-      profesional_id: user.id,
-      dia_semana: Number(diaSemana),
-      hora_inicio: horaInicio,
-      hora_fin: horaFin,
-      duracion_minutos: Number(duracion),
-      fecha_inicio: fechaInicio,
-      fecha_fin: fechaFin,
-    };
+    try {
+      if (editandoId) {
+        const payload = {
+          profesional_id: user.id,
+          dia_semana: Number(diasSeleccionados[0]),
+          hora_inicio: horaInicio,
+          hora_fin: horaFin,
+          duracion_minutos: Number(duracion),
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          activo: true,
+          origen: ORIGEN_DISPONIBILIDAD,
+        };
 
-    const { error } = editandoId
-      ? await supabase
-          .from("disponibilidad_profesional")
+        const { error } = await supabase
+          .from(TABLA_DISPONIBILIDAD)
           .update(payload)
           .eq("id", editandoId)
           .eq("profesional_id", user.id)
-      : await supabase
-          .from("disponibilidad_profesional")
-          .insert([payload]);
+          .eq("origen", ORIGEN_DISPONIBILIDAD);
 
-    setGuardando(false);
+        if (error) throw error;
+      } else {
+        const payloads = diasSeleccionados.map((diaId) => ({
+          profesional_id: user.id,
+          dia_semana: Number(diaId),
+          hora_inicio: horaInicio,
+          hora_fin: horaFin,
+          duracion_minutos: Number(duracion),
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          activo: true,
+          origen: ORIGEN_DISPONIBILIDAD,
+          fecha_crea: new Date().toISOString(),
+        }));
 
-    if (error) {
-      mostrarModal("Error", error.message);
-      return;
-    }
-    
-    if (editandoId) {
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === editandoId
-            ? {
-                ...item,
-                dia_semana: Number(diaSemana),
-                hora_inicio: horaInicio,
-                hora_fin: horaFin,
-                duracion_minutos: Number(duracion),
-                fecha_inicio: fechaInicio,
-                fecha_fin: fechaFin,
-              }
-            : item
-        )
-      );
-    } else {
+        console.log("Guardando reglas de disponibilidad Google Calendar en Supabase:", {
+          tabla: TABLA_DISPONIBILIDAD,
+          payloads,
+        });
+
+        const { error } = await supabase.from(TABLA_DISPONIBILIDAD).insert(payloads);
+        if (error) throw error;
+      }
+
       await cargar();
+      resetFormulario();
+
+      mostrarModal(
+        "Disponibilidad",
+        editandoId
+          ? "Regla de disponibilidad actualizada correctamente."
+          : `Disponibilidad guardada para: ${nombreDiasSeleccionados(diasSeleccionados)}.`
+      );
+    } catch (error) {
+      if (esErrorColumnaOrigen(error)) {
+        mostrarModal(
+          "Falta migración de base de datos",
+          "No se pudo guardar porque la tabla disponibilidad_profesional no tiene el campo origen. Ejecuta primero el script SQL de migración."
+        );
+      } else {
+        mostrarModal("Error", error.message || "No se pudo guardar la disponibilidad.");
+      }
+    } finally {
+      setGuardando(false);
     }
-    
-    resetFormulario();
-    
-    mostrarModal(
-      "Disponibilidad",
-      editandoId
-        ? "Disponibilidad actualizada correctamente."
-        : "Disponibilidad guardada correctamente."
-    );
   }
 
   async function eliminar(item) {
@@ -227,84 +465,60 @@ export default function DisponibilidadPage({ user, goBack }) {
       );
       return;
     }
-  
-    const confirma = window.confirm(
-      "¿Estás seguro de eliminar esta disponibilidad?"
-    );
-  
+
+    const confirma = window.confirm("¿Estás seguro de eliminar esta disponibilidad?");
     if (!confirma) return;
-  
+
     const { error } = await supabase
-      .from("disponibilidad_profesional")
+      .from(TABLA_DISPONIBILIDAD)
       .delete()
       .eq("id", item.id)
-      .eq("profesional_id", user.id);
-  
+      .eq("profesional_id", user.id)
+      .eq("origen", ORIGEN_DISPONIBILIDAD);
+
     if (error) {
       mostrarModal("Error", error.message);
       return;
     }
-  
+
     setItems((prev) => prev.filter((registro) => registro.id !== item.id));
-  
     mostrarModal("Disponibilidad", "Disponibilidad eliminada correctamente.");
   }
 
-  function estaReservado(fecha, hora) {
-    return citas.some(
-      (cita) =>
-        cita.fecha === fecha &&
-        cita.hora_inicio.slice(0, 5) === hora &&
-        cita.estado !== "cancelada"
-    );
+  function cambiarSemana(cantidadDias) {
+    setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidadDias)));
   }
 
-  function slotsDelDia(fechaObj) {
-    const fecha = fechaTexto(fechaObj);
-    const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+  function renderSlot(slot) {
+    const ocupado = slot.estado === "ocupado";
+    const ocupadoGoogle = slot.motivo_ocupado === "google_calendar";
 
-    const reglas = items.filter(
-      (item) =>
-        item.dia_semana === diaJS &&
-        item.fecha_inicio <= fecha &&
-        item.fecha_fin >= fecha
-    );
-
-    const slots = [];
-
-    reglas.forEach((regla) => {
-      generarSlots(
-        regla.hora_inicio,
-        regla.hora_fin,
-        regla.duracion_minutos
-      ).forEach((hora) => {
-        slots.push({
-          hora,
-          reservado: estaReservado(fecha, hora),
-        });
-      });
-    });
-
-    return slots;
-  }
-
-  function renderSlot(slot, tipo, fecha, index) {
     return (
       <div
-        key={`${tipo}-${fecha}-${slot.hora}-${index}`}
-        className={`rounded-xl px-3 py-2 text-center text-sm font-bold ${
-          slot.reservado
-            ? "border border-slate-900 bg-slate-700 text-white"
-            : tipo === "AM"
-            ? "bg-cyan-50 text-cyan-700"
-            : "bg-orange-50 text-orange-700"
+        key={`${slot.fecha}-${slot.hora_inicio}-${slot.regla_id}`}
+        title={ocupadoGoogle ? slot.eventoGoogle?.titulo : "Disponible para reserva"}
+        className={`rounded-xl px-3 py-2 text-sm font-bold leading-tight ${
+          ocupado
+            ? ocupadoGoogle
+              ? "border border-slate-200 bg-slate-100 text-slate-500"
+              : "border border-slate-900 bg-slate-700 text-white"
+            : "border border-emerald-100 bg-emerald-50 text-emerald-700"
         }`}
       >
-        {slot.hora}
-        <br />
-        <span className="text-[11px]">
-          {slot.reservado ? "🔒 Reservado" : "✓ Disponible"}
-        </span>
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            {slot.hora_inicio} - {slot.hora_fin}
+          </span>
+          <span className="text-[10px]">{ocupado ? "Ocupado" : "Libre"}</span>
+        </div>
+
+        <p className="mt-1 line-clamp-1 text-[11px] font-semibold">
+          {ocupadoGoogle
+            ? slot.eventoGoogle?.titulo || "Evento Google Calendar"
+            : slot.motivo_ocupado === "mentalia"
+            ? "Reserva Mentalia"
+            : "Disponible para paciente"}
+        </p>
       </div>
     );
   }
@@ -314,15 +528,13 @@ export default function DisponibilidadPage({ user, goBack }) {
       <div className="mb-8">
         <h3
           className={`mb-4 rounded-2xl py-3 text-center text-xl font-black ${
-            tipo === "AM"
-              ? "bg-cyan-100 text-cyan-800"
-              : "bg-orange-100 text-orange-700"
+            tipo === "AM" ? "bg-cyan-100 text-cyan-800" : "bg-orange-100 text-orange-700"
           }`}
         >
           BLOQUE {titulo}
         </h3>
 
-        <div className="grid gap-3 md:grid-cols-7">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-7">
           {diasSemana.map((fechaObj) => {
             const fecha = fechaTexto(fechaObj);
             const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
@@ -330,29 +542,50 @@ export default function DisponibilidadPage({ user, goBack }) {
 
             const slotsFiltrados =
               tipo === "AM"
-                ? slots.filter((s) => Number(s.hora.slice(0, 2)) < 14)
-                : slots.filter((s) => Number(s.hora.slice(0, 2)) >= 14);
+                ? slots.filter((slot) => Number(slot.hora_inicio.slice(0, 2)) < 14)
+                : slots.filter((slot) => Number(slot.hora_inicio.slice(0, 2)) >= 14);
+
+            const disponibles = slotsFiltrados.filter((slot) => slot.estado === "disponible").length;
 
             return (
-              <div key={`${tipo}-${fecha}`} className="rounded-2xl border bg-slate-50 p-3">
-                <h4 className="text-center font-black text-cyan-700">
-                  {dias.find((d) => d.id === dia)?.nombre}
-                </h4>
+              <div key={`${tipo}-${fecha}`} className="min-h-[260px] rounded-2xl border bg-slate-50 p-3">
+                <h4 className="text-center font-black text-cyan-700">{obtenerNombreDia(dia)}</h4>
 
-                <p className="mb-3 text-center text-xs text-slate-500">
-                  {formatearFecha(fecha)}
-                </p>
+                <p className="mb-2 text-center text-xs text-slate-500">{formatearFecha(fecha)}</p>
+
+                {slotsFiltrados.length > 0 && (
+                  <p className="mb-3 rounded-full bg-white px-2 py-1 text-center text-[11px] font-bold text-emerald-700">
+                    {disponibles} libres / {slotsFiltrados.length} bloques
+                  </p>
+                )}
+
+                {eventosGoogleDelDia(fecha).length > 0 && (
+                  <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50 p-2">
+                    <p className="mb-1 text-[10px] font-black uppercase text-blue-700">Google Calendar ocupado</p>
+                    <div className="space-y-1">
+                      {eventosGoogleDelDia(fecha).slice(0, 3).map((evento) => (
+                        <p
+                          key={evento.google_calendar_event_id || `${evento.fecha_inicio}-${evento.titulo}`}
+                          className="line-clamp-1 text-[11px] font-semibold text-blue-800"
+                          title={evento.titulo}
+                        >
+                          {evento.hora_inicio || "Todo el día"}
+                          {evento.hora_fin ? ` - ${evento.hora_fin}` : ""} · {evento.titulo || "Evento Google"}
+                        </p>
+                      ))}
+                      {eventosGoogleDelDia(fecha).length > 3 && (
+                        <p className="text-[11px] font-bold text-blue-700">
+                          +{eventosGoogleDelDia(fecha).length - 3} eventos más
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {slotsFiltrados.length === 0 ? (
-                  <p className="text-center text-xs text-slate-400">
-                    Sin disponibilidad
-                  </p>
+                  <p className="rounded-xl bg-white p-3 text-center text-xs text-slate-400">Sin disponibilidad</p>
                 ) : (
-                  <div className="space-y-2">
-                    {slotsFiltrados.map((slot, index) =>
-                      renderSlot(slot, tipo, fecha, index)
-                    )}
-                  </div>
+                  <div className="space-y-2">{slotsFiltrados.map((slot) => renderSlot(slot))}</div>
                 )}
               </div>
             );
@@ -362,49 +595,120 @@ export default function DisponibilidadPage({ user, goBack }) {
     );
   }
 
-  useEffect(() => {
-    cargar();
-  }, []);
-
-  const diasSemana = Array.from({ length: 7 }, (_, i) => sumarDias(semanaBase, i));
-  const finSemana = sumarDias(semanaBase, 6);
-
   return (
-    <main className="min-h-screen bg-[#eef8fb] p-6">
-      <div className="mx-auto max-w-7xl">
-        <button onClick={goBack} className="mb-4 font-bold text-cyan-700">
-          ← Volver
-        </button>
+    <main className="min-h-screen bg-[#eef8fb] px-4 py-6 lg:px-8">
+      <div className="mx-auto w-full max-w-[1600px] px-2">
+        <button onClick={goBack} className="mb-4 font-bold text-cyan-700">← Volver</button>
 
-        <h1 className="mb-6 text-center text-3xl font-black">
-          Disponibilidad
-        </h1>
+        <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="text-3xl font-black text-slate-900">Disponibilidad para reservas</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Define ventanas de atención con origen google_calendar. Google Calendar se lee para bloquear horas ocupadas; Mentalia guarda la regla operativa en Supabase.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => cargarEventosGoogleCalendar(semanaBase)}
+            disabled={cargandoGoogleCalendar}
+            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-60"
+          >
+            {cargandoGoogleCalendar ? "Leyendo Google Calendar..." : "Actualizar Google Calendar"}
+          </button>
+        </div>
+
+        {errorGoogleCalendar && (
+          <div className="mb-6 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-semibold text-red-700">
+            {errorGoogleCalendar}
+          </div>
+        )}
+
+        <section className="mb-6 rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm">
+          <h2 className="mb-3 text-lg font-black text-slate-900">Modelo operativo de disponibilidad</h2>
+          <div className="grid gap-3 text-sm leading-6 text-slate-600 md:grid-cols-3">
+            <div className="rounded-2xl bg-emerald-50 p-4">
+              <p className="font-black text-emerald-700">1. Reglas Google Calendar</p>
+              <p>Esta pantalla solo lee y guarda reglas con origen google_calendar, para no mezclar disponibilidad histórica creada manualmente en Mentalia.</p>
+            </div>
+            <div className="rounded-2xl bg-blue-50 p-4">
+              <p className="font-black text-blue-700">2. Ocupación real</p>
+              <p>Los eventos de Google Calendar bloquean horarios dentro de las ventanas configuradas.</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <p className="font-black text-slate-700">3. Horas para paciente</p>
+              <p>El paciente verá solo bloques libres: reglas Google Calendar menos eventos ocupados y reservas vigentes.</p>
+            </div>
+          </div>
+        </section>
 
         <section className="mb-6 rounded-2xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-center font-black">
-            {editandoId ? "Editar horario disponible" : "Agregar horario disponible"}
+          <h2 className="mb-4 text-center font-black text-slate-900">
+            {editandoId ? "Editar regla de disponibilidad" : "Agregar regla de disponibilidad"}
           </h2>
+
+          <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
+            Puedes seleccionar uno o varios días para aplicar el mismo horario. Por ejemplo: lunes y jueves de 13:00 a 18:00, o lunes a viernes de 09:00 a 18:00. Al guardar, Mentalia crea una regla por cada día seleccionado con origen google_calendar.
+          </div>
 
           {editandoId && (
             <div className="mb-4 rounded-2xl bg-yellow-50 p-4 text-center text-sm font-bold text-yellow-700">
-              Estás editando una disponibilidad existente.
+              Estás editando una regla individual. Para cambiar varios días a la vez, crea una nueva programación múltiple.
             </div>
           )}
 
-          <div className="grid gap-3 md:grid-cols-3">
-            <select
-              value={diaSemana}
-              onChange={(e) => setDiaSemana(e.target.value)}
-              className="rounded-xl border px-4 py-3"
-            >
-              <option value="">Seleccionar día</option>
-              {dias.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.nombre}
-                </option>
-              ))}
-            </select>
+          <div className="mb-5">
+            <p className="mb-2 text-sm font-black text-slate-700">Días de atención</p>
+            <div className="mb-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => seleccionarDias([1, 2, 3, 4, 5])}
+                disabled={!!editandoId}
+                className="rounded-xl border px-3 py-2 text-xs font-black text-cyan-700 disabled:opacity-50"
+              >
+                Lunes a viernes
+              </button>
+              <button
+                type="button"
+                onClick={() => seleccionarDias([1, 2, 3, 4, 5, 6, 7])}
+                disabled={!!editandoId}
+                className="rounded-xl border px-3 py-2 text-xs font-black text-cyan-700 disabled:opacity-50"
+              >
+                Toda la semana
+              </button>
+              <button
+                type="button"
+                onClick={() => seleccionarDias([])}
+                disabled={!!editandoId}
+                className="rounded-xl border px-3 py-2 text-xs font-black text-slate-500 disabled:opacity-50"
+              >
+                Limpiar
+              </button>
+            </div>
 
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+              {dias.map((dia) => {
+                const seleccionado = diasSeleccionados.includes(dia.id);
+                return (
+                  <button
+                    key={dia.id}
+                    type="button"
+                    onClick={() => toggleDia(dia.id)}
+                    disabled={!!editandoId}
+                    className={`rounded-2xl border px-3 py-3 text-sm font-black transition disabled:cursor-not-allowed ${
+                      seleccionado
+                        ? "border-cyan-500 bg-cyan-50 text-cyan-800"
+                        : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                    }`}
+                  >
+                    {dia.nombre}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
             <input
               type="date"
               value={fechaInicio}
@@ -435,12 +739,7 @@ export default function DisponibilidadPage({ user, goBack }) {
               className="rounded-xl border px-4 py-3"
             />
 
-            <select
-              value={duracion}
-              onChange={(e) => setDuracion(e.target.value)}
-              className="rounded-xl border px-4 py-3"
-            >
-              <option value="">Duración</option>
+            <select value={duracion} onChange={(e) => setDuracion(e.target.value)} className="rounded-xl border px-4 py-3">
               <option value="30">30 min</option>
               <option value="45">45 min</option>
               <option value="60">60 min</option>
@@ -448,24 +747,17 @@ export default function DisponibilidadPage({ user, goBack }) {
             </select>
           </div>
 
-          <div className="mt-4 flex justify-center gap-3">
+          <div className="mt-4 flex flex-col justify-center gap-3 md:flex-row">
             <button
               onClick={guardar}
-              disabled={guardando}
+              disabled={guardando || cargandoDatos}
               className="rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white disabled:opacity-50"
             >
-              {guardando
-                ? "Guardando..."
-                : editandoId
-                ? "Actualizar disponibilidad"
-                : "Guardar disponibilidad"}
+              {guardando ? "Guardando en Supabase..." : editandoId ? "Actualizar regla" : "Guardar programación"}
             </button>
 
             {editandoId && (
-              <button
-                onClick={resetFormulario}
-                className="rounded-xl border px-6 py-3 font-black text-slate-600"
-              >
+              <button onClick={resetFormulario} className="rounded-xl border px-6 py-3 font-black text-slate-600">
                 Cancelar edición
               </button>
             )}
@@ -473,23 +765,24 @@ export default function DisponibilidadPage({ user, goBack }) {
         </section>
 
         <section className="mb-6 rounded-2xl bg-white p-6 shadow">
-          <div className="mb-5 flex items-center justify-between gap-4">
-            <button
-              onClick={() => setSemanaBase(sumarDias(semanaBase, -7))}
-              className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
-            >
+          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <button onClick={() => cambiarSemana(-7)} className="rounded-xl border px-4 py-2 font-bold text-cyan-700">
               ← Semana anterior
             </button>
 
-            <h2 className="text-center font-black">
-              Semana {formatearFecha(fechaTexto(semanaBase))} al{" "}
-              {formatearFecha(fechaTexto(finSemana))}
-            </h2>
+            <div className="text-center">
+              <h2 className="font-black text-slate-900">
+                Semana {formatearFecha(fechaTexto(semanaBase))} al {" "}
+                {formatearFecha(fechaTexto(finSemana))}
+              </h2>
+              <p className="text-xs text-slate-500">
+                {cargandoGoogleCalendar
+                  ? "Leyendo eventos ocupados desde Google Calendar..."
+                  : `${eventosGoogleCalendar.length} eventos Google Calendar detectados en la semana`}
+              </p>
+            </div>
 
-            <button
-              onClick={() => setSemanaBase(sumarDias(semanaBase, 7))}
-              className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
-            >
+            <button onClick={() => cambiarSemana(7)} className="rounded-xl border px-4 py-2 font-bold text-cyan-700">
               Semana siguiente →
             </button>
           </div>
@@ -499,50 +792,36 @@ export default function DisponibilidadPage({ user, goBack }) {
         </section>
 
         <section className="rounded-2xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-center font-black">
-            Reglas de disponibilidad configuradas
-          </h2>
+          <h2 className="mb-4 text-center font-black text-slate-900">Reglas asociadas a Google Calendar</h2>
 
           {items.length === 0 ? (
             <p className="text-center text-slate-500">
-              Aún no tienes disponibilidad configurada.
+              Aún no tienes disponibilidad asociada a Google Calendar. Las reglas históricas de Mentalia no se muestran en esta pantalla.
             </p>
           ) : (
-            <div className="space-y-3">
+            <div className="grid gap-3 lg:grid-cols-2">
               {items.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between rounded-xl border p-4"
-                >
+                <div key={item.id} className="flex flex-col gap-3 rounded-xl border p-4 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <p className="font-black">
-                      {dias.find((d) => d.id === item.dia_semana)?.nombre}
-                    </p>
-
+                    <div className="mb-2 inline-flex rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black uppercase text-blue-700">
+                      Google Calendar
+                    </div>
+                    <p className="font-black text-slate-900">{obtenerNombreDia(item.dia_semana)}</p>
                     <p className="text-sm text-slate-500">
-                      {item.hora_inicio.slice(0, 5)} -{" "}
-                      {item.hora_fin.slice(0, 5)} ·{" "}
-                      {item.duracion_minutos} min
+                      {item.hora_inicio.slice(0, 5)} - {" "}
+                      {item.hora_fin.slice(0, 5)} · {item.duracion_minutos} min
                     </p>
-
                     <p className="text-sm text-slate-500">
-                      Desde {formatearFecha(item.fecha_inicio)} hasta{" "}
+                      Desde {formatearFecha(item.fecha_inicio)} hasta {" "}
                       {formatearFecha(item.fecha_fin)}
                     </p>
                   </div>
 
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => editar(item)}
-                      className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
-                    >
+                    <button onClick={() => editar(item)} className="rounded-xl border px-4 py-2 font-bold text-cyan-700">
                       Editar
                     </button>
-
-                    <button
-                      onClick={() => eliminar(item)}
-                      className="rounded-xl border px-4 py-2 font-bold text-red-600"
-                    >
+                    <button onClick={() => eliminar(item)} className="rounded-xl border px-4 py-2 font-bold text-red-600">
                       Eliminar
                     </button>
                   </div>
@@ -556,14 +835,8 @@ export default function DisponibilidadPage({ user, goBack }) {
       {modal.visible && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-3 text-xl font-black text-slate-900">
-              {modal.title}
-            </h2>
-
-            <p className="mb-6 leading-6 text-slate-600">
-              {modal.message}
-            </p>
-
+            <h2 className="mb-3 text-xl font-black text-slate-900">{modal.title}</h2>
+            <p className="mb-6 leading-6 text-slate-600">{modal.message}</p>
             <div className="flex justify-end">
               <button
                 onClick={() => setModal({ ...modal, visible: false })}
