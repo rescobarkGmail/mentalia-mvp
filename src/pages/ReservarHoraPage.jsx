@@ -46,7 +46,6 @@ function obtenerSlugDesdeUrl() {
   if (typeof window === "undefined") return "";
 
   const url = new URL(window.location.href);
-
   const slugQuery =
     url.searchParams.get("slug") ||
     url.searchParams.get("profesional") ||
@@ -58,7 +57,9 @@ function obtenerSlugDesdeUrl() {
   const indiceReservar = partes.findIndex((parte) => parte === "reservar");
 
   if (indiceReservar >= 0 && partes[indiceReservar + 1]) {
-    return decodeURIComponent(partes[indiceReservar + 1]).trim().toLowerCase();
+    return decodeURIComponent(partes[indiceReservar + 1])
+      .trim()
+      .toLowerCase();
   }
 
   return "";
@@ -175,11 +176,123 @@ function fechaDentroDeRegla(fechaISO, regla) {
   return true;
 }
 
+function limpiarRut(rut) {
+  return String(rut || "")
+    .toUpperCase()
+    .replace(/[^0-9K]/g, "");
+}
+
+function formatearRutChileno(valor) {
+  const limpio = limpiarRut(valor);
+  if (!limpio) return "";
+
+  const cuerpo = limpio.slice(0, -1);
+  const dv = limpio.slice(-1);
+
+  if (!cuerpo) return dv;
+
+  const cuerpoConPuntos = cuerpo.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${cuerpoConPuntos}-${dv}`;
+}
+
+function validarRutChileno(rut) {
+  const limpio = limpiarRut(rut);
+
+  if (limpio.length < 2) return false;
+
+  const cuerpo = limpio.slice(0, -1);
+  const dv = limpio.slice(-1);
+
+  if (!/^\d+$/.test(cuerpo)) return false;
+  if (!/^[0-9K]$/.test(dv)) return false;
+
+  let suma = 0;
+  let multiplicador = 2;
+
+  for (let i = cuerpo.length - 1; i >= 0; i -= 1) {
+    suma += Number(cuerpo[i]) * multiplicador;
+    multiplicador = multiplicador === 7 ? 2 : multiplicador + 1;
+  }
+
+  const resto = suma % 11;
+  const resultado = 11 - resto;
+  const dvEsperado =
+    resultado === 11 ? "0" : resultado === 10 ? "K" : String(resultado);
+
+  return dv === dvEsperado;
+}
+
+function validarEmail(email) {
+  const valor = normalizarTexto(email).toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(valor);
+}
+
+function normalizarTelefonoChileno(valor) {
+  const digitos = String(valor || "").replace(/\D/g, "");
+
+  if (digitos.startsWith("569") && digitos.length === 11) {
+    return `+${digitos}`;
+  }
+
+  if (digitos.startsWith("9") && digitos.length === 9) {
+    return `+56${digitos}`;
+  }
+
+  if (digitos.startsWith("56") && digitos.length === 11) {
+    return `+${digitos}`;
+  }
+
+  return valor;
+}
+
+function validarCelularChileno(valor) {
+  const normalizado = normalizarTelefonoChileno(valor);
+  return /^\+569\d{8}$/.test(normalizado);
+}
+
+function obtenerMensajeErrorRut(rut) {
+  if (!normalizarTexto(rut)) return "El RUT es obligatorio.";
+  if (!validarRutChileno(rut)) {
+    return "Ingresa un RUT chileno válido. Ejemplo: 12.345.678-K.";
+  }
+  return "";
+}
+
+function CampoTexto({
+  label,
+  value,
+  onChange,
+  error,
+  type = "text",
+  placeholder = "",
+  onBlur,
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-black text-slate-700">
+        {label}
+      </span>
+
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        className={`w-full rounded-xl border px-4 py-3 outline-cyan-400 ${
+          error ? "border-red-300 bg-red-50" : ""
+        }`}
+      />
+
+      {error && <p className="mt-1 text-xs font-bold text-red-600">{error}</p>}
+    </label>
+  );
+}
+
 export default function ReservarHoraPage({
   profesionalId: profesionalIdProp,
   slug: slugProp,
   goBack,
-  onContinuar,
   onReservaExitosa,
 }) {
   const [profesional, setProfesional] = useState(null);
@@ -191,21 +304,28 @@ export default function ReservarHoraPage({
   const [fechaInicioSemana, setFechaInicioSemana] = useState(() =>
     obtenerInicioSemana()
   );
-
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(null);
   const [slotSeleccionado, setSlotSeleccionado] = useState(null);
+
+  const [paso, setPaso] = useState("horario");
   const [cargandoPerfil, setCargandoPerfil] = useState(true);
   const [cargandoDisponibilidad, setCargandoDisponibilidad] = useState(false);
   const [error, setError] = useState("");
   const [reservando, setReservando] = useState(false);
+  const [buscandoPaciente, setBuscandoPaciente] = useState(false);
+  const [pacienteEncontrado, setPacienteEncontrado] = useState(false);
 
+  const [identificador, setIdentificador] = useState("");
   const [nombres, setNombres] = useState("");
   const [apellidos, setApellidos] = useState("");
-  const [identificador, setIdentificador] = useState("");
   const [email, setEmail] = useState("");
   const [telefono, setTelefono] = useState("");
-  const [primeraAtencion, setPrimeraAtencion] = useState("");
+  const [primeraAtencion, setPrimeraAtencion] = useState("si");
   const [canalContacto, setCanalContacto] = useState("WhatsApp");
   const [aceptaCondiciones, setAceptaCondiciones] = useState(false);
+
+  const [erroresFormulario, setErroresFormulario] = useState({});
+  const [reservaConfirmada, setReservaConfirmada] = useState(null);
 
   const semana = useMemo(() => {
     return DIAS.map((dia, index) => {
@@ -222,6 +342,28 @@ export default function ReservarHoraPage({
       };
     });
   }, [fechaInicioSemana]);
+
+  const slotsPorFecha = useMemo(() => {
+    const mapa = new Map();
+
+    semana.forEach((dia) => {
+      mapa.set(dia.fecha, obtenerSlotsDelDia(dia));
+    });
+
+    return mapa;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [semana, disponibilidad, reservasOcupadas, profesional]);
+
+  const diasConSlots = useMemo(() => {
+    return semana.map((dia) => ({
+      ...dia,
+      slots: slotsPorFecha.get(dia.fecha) || [],
+    }));
+  }, [semana, slotsPorFecha]);
+
+  const slotsDiaSeleccionado = fechaSeleccionada
+    ? slotsPorFecha.get(fechaSeleccionada) || []
+    : [];
 
   useEffect(() => {
     const slugUrl = obtenerSlugDesdeUrl();
@@ -243,17 +385,23 @@ export default function ReservarHoraPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profesionalId, fechaInicioSemana]);
 
+  useEffect(() => {
+    if (!fechaSeleccionada) {
+      const primerDiaDisponible = diasConSlots.find(
+        (dia) => dia.slots.length > 0
+      );
+
+      if (primerDiaDisponible) {
+        setFechaSeleccionada(primerDiaDisponible.fecha);
+      }
+    }
+  }, [diasConSlots, fechaSeleccionada]);
+
   async function cargarPerfilPublico({ slugFinal, idFinal }) {
     setCargandoPerfil(true);
     setError("");
 
     try {
-      if (!slugFinal && !idFinal) {
-        setError("No se indicó el enlace público del profesional.");
-        setCargandoPerfil(false);
-        return;
-      }
-
       let query = supabase
         .from("v_profesionales_reserva_publica")
         .select("*")
@@ -261,31 +409,30 @@ export default function ReservarHoraPage({
 
       if (slugFinal) {
         query = query.eq("slug_publico", slugFinal);
-      } else {
+      } else if (idFinal) {
         query = query.eq("id", idFinal);
+      } else {
+        setProfesional(null);
+        setError("No se encontró el identificador público del profesional.");
+        return;
       }
 
-      const { data, error: errorPerfil } = await query.maybeSingle();
+      const { data, error: perfilError } = await query.maybeSingle();
 
-      if (errorPerfil) throw errorPerfil;
+      if (perfilError) throw perfilError;
 
       if (!data) {
-        setError(
-          "No encontramos una agenda pública activa para este profesional."
-        );
         setProfesional(null);
-        setProfesionalId("");
+        setError("El enlace de reserva no existe o no está activo.");
         return;
       }
 
       setProfesional(data);
       setProfesionalId(data.id);
+      setSlugPublico(data.slug_publico || slugFinal);
     } catch (err) {
-      console.error("Error cargando profesional público:", err);
-      setError(
-        err?.message ||
-          "No fue posible cargar la página de reserva del profesional."
-      );
+      console.error("Error cargando perfil público:", err);
+      setError(`No fue posible cargar el perfil público: ${err.message}`);
     } finally {
       setCargandoPerfil(false);
     }
@@ -297,38 +444,40 @@ export default function ReservarHoraPage({
     setCargandoDisponibilidad(true);
     setError("");
 
-    const desde = semana[0]?.fecha;
-    const hasta = semana[6]?.fecha;
-
     try {
-      const { data: disponibilidadData, error: disponibilidadError } =
-        await supabase
-          .from("v_disponibilidad_reserva_publica")
-          .select("*")
-          .eq("profesional_id", idProfesional)
-          .order("dia_semana", { ascending: true })
-          .order("hora_inicio", { ascending: true });
+      const fechaInicio = semana?.[0]?.fecha;
+      const fechaFin = semana?.[6]?.fecha;
 
-      if (disponibilidadError) throw disponibilidadError;
+      const { data: disp, error: dispError } = await supabase
+        .from("v_disponibilidad_reserva_publica")
+        .select("*")
+        .eq("profesional_id", idProfesional)
+        .eq("activo", true)
+        .lte("fecha_inicio", fechaFin)
+        .gte("fecha_fin", fechaInicio)
+        .order("dia_semana", { ascending: true })
+        .order("hora_inicio", { ascending: true });
 
-      const { data: ocupacionesData, error: ocupacionesError } = await supabase
+      if (dispError) throw dispError;
+
+      const { data: ocupadas, error: ocupadasError } = await supabase
         .from("v_reservas_ocupadas_publicas")
         .select("*")
         .eq("profesional_id", idProfesional)
-        .gte("fecha", desde)
-        .lte("fecha", hasta);
+        .gte("fecha", fechaInicio)
+        .lte("fecha", fechaFin);
 
-      if (ocupacionesError) throw ocupacionesError;
+      if (ocupadasError) throw ocupadasError;
 
-      setDisponibilidad(disponibilidadData || []);
-      setReservasOcupadas(ocupacionesData || []);
-      setSlotSeleccionado(null);
-
+      setDisponibilidad(disp || []);
+      setReservasOcupadas(ocupadas || []);
     } catch (err) {
       console.error("Error cargando disponibilidad pública:", err);
       setError(
-        err?.message || "No fue posible cargar la disponibilidad del profesional."
+        `No fue posible cargar la disponibilidad pública: ${err.message}`
       );
+      setDisponibilidad([]);
+      setReservasOcupadas([]);
     } finally {
       setCargandoDisponibilidad(false);
     }
@@ -339,454 +488,592 @@ export default function ReservarHoraPage({
 
     return reservasOcupadas.some((reserva) => {
       if (reserva.fecha !== fecha) return false;
-      if (["cancelada", "cancelada_paciente", "cancelada_profesional"].includes(reserva.estado)) {
-        return false;
-      }
 
-      const inicio = normalizarHora(reserva.hora_inicio);
-      const fin = normalizarHora(reserva.hora_fin);
+      const estado = String(reserva.estado || "").toLowerCase();
+      if (estado === "cancelada" || estado === "cancelado") return false;
 
-      if (!inicio || !fin) return false;
+      const inicioReserva = normalizarHora(reserva.hora_inicio);
+      const finReserva = normalizarHora(reserva.hora_fin);
 
-      return horariosSeCruzan(hora, horaFinSlot, inicio, fin);
+      if (!inicioReserva || !finReserva) return false;
+
+      return horariosSeCruzan(hora, horaFinSlot, inicioReserva, finReserva);
     });
   }
 
   function obtenerSlotsDelDia(dia) {
-    const reglasDia = disponibilidad.filter((regla) => {
+    const bloquesDia = disponibilidad.filter((bloque) => {
       return (
-        Number(regla.dia_semana) === Number(dia.dia_semana) &&
-        fechaDentroDeRegla(dia.fecha, regla)
+        Number(bloque.dia_semana) === Number(dia.dia_semana) &&
+        fechaDentroDeRegla(dia.fecha, bloque)
       );
     });
 
-    const slotsPorClave = new Map();
+    const slots = [];
 
-    reglasDia.forEach((regla) => {
-      const duracion = Number(
-        regla.duracion_minutos || profesional?.duracion_sesion_minutos || 50
+    bloquesDia.forEach((bloque) => {
+      const duracion =
+        Number(bloque.duracion_minutos) ||
+        Number(profesional?.duracion_sesion_minutos) ||
+        50;
+
+      const horas = generarSlots(
+        bloque.hora_inicio,
+        bloque.hora_fin,
+        duracion
       );
 
-      const horas = generarSlots(regla.hora_inicio, regla.hora_fin, duracion);
-
       horas.forEach((hora) => {
-        const horaFin = calcularHoraFin(hora, duracion);
         const pasado = fechaHoraEsPasada(dia.fecha, hora);
         const ocupado = estaOcupado(dia.fecha, hora, duracion);
+        const horaFin = calcularHoraFin(hora, duracion);
 
         if (!pasado && !ocupado) {
-          const clave = `${dia.fecha}-${hora}-${horaFin}`;
-
-          if (!slotsPorClave.has(clave)) {
-            slotsPorClave.set(clave, {
-              bloque_id: regla.id,
-              fecha: dia.fecha,
-              hora,
-              hora_fin: horaFin,
-              duracion,
-              dia: dia.dia,
-            });
-          }
+          slots.push({
+            bloque_id: bloque.id,
+            fecha: dia.fecha,
+            hora,
+            hora_fin: horaFin,
+            duracion,
+            dia: dia.dia,
+          });
         }
       });
     });
 
-    return Array.from(slotsPorClave.values()).sort((a, b) =>
+    const unicos = new Map();
+
+    slots.forEach((slot) => {
+      const clave = `${slot.fecha}-${slot.hora}-${slot.hora_fin}`;
+      unicos.set(clave, slot);
+    });
+
+    return Array.from(unicos.values()).sort((a, b) =>
       a.hora.localeCompare(b.hora)
     );
   }
 
-  const totalSlotsSemana = semana.reduce(
-    (total, dia) => total + obtenerSlotsDelDia(dia).length,
-    0
-  );
+  function seleccionarSlot(slot) {
+    setSlotSeleccionado(slot);
+    setPaso("datos");
+    setErroresFormulario({});
+  }
 
-  function validarDatosAdministrativos() {
-    if (!slotSeleccionado) {
-      alert("Selecciona un horario disponible.");
-      return false;
+  function semanaAnterior() {
+    setSlotSeleccionado(null);
+    setFechaSeleccionada(null);
+    setFechaInicioSemana((prev) => sumarDias(prev, -7));
+    setPaso("horario");
+  }
+
+  function semanaSiguiente() {
+    setSlotSeleccionado(null);
+    setFechaSeleccionada(null);
+    setFechaInicioSemana((prev) => sumarDias(prev, 7));
+    setPaso("horario");
+  }
+
+  function volverAHoy() {
+    setSlotSeleccionado(null);
+    setFechaSeleccionada(null);
+    setFechaInicioSemana(obtenerInicioSemana());
+    setPaso("horario");
+  }
+
+  async function buscarPacientePorRut(rutFormateado) {
+    const rutError = obtenerMensajeErrorRut(rutFormateado);
+
+    if (rutError || !slugPublico) {
+      console.warn("No se busca paciente por RUT:", {
+        rutError,
+        slugPublico,
+        rutFormateado,
+      });
+      return;
     }
 
-    if (!normalizarTexto(nombres)) {
-      alert("Ingresa tu nombre.");
-      return false;
+    setBuscandoPaciente(true);
+    setPacienteEncontrado(false);
+
+    try {
+      console.log("Buscando paciente por RUT:", {
+        p_slug_publico: slugPublico,
+        p_rut: rutFormateado,
+      });
+
+      const { data, error: rpcError } = await supabase.rpc(
+        "buscar_paciente_publico_por_rut",
+        {
+          p_slug_publico: slugPublico,
+          p_rut: rutFormateado,
+        }
+      );
+
+      console.log("Respuesta buscar_paciente_publico_por_rut:", {
+        data,
+        rpcError,
+      });
+
+      if (rpcError) throw rpcError;
+
+      const paciente = Array.isArray(data) ? data[0] : null;
+
+      if (paciente) {
+        setNombres(paciente.nombres || "");
+        setApellidos(paciente.apellidos || "");
+        setEmail(paciente.email || "");
+        setTelefono(paciente.telefono || "");
+        setPacienteEncontrado(true);
+
+        setErroresFormulario((prev) => ({
+          ...prev,
+          identificador: "",
+        }));
+      } else {
+        setPacienteEncontrado(false);
+      }
+    } catch (err) {
+      console.error("Error buscando paciente por RUT:", err);
+
+      setErroresFormulario((prev) => ({
+        ...prev,
+        identificador:
+          "No se pudo buscar el paciente. Puedes continuar ingresando los datos manualmente.",
+      }));
+    } finally {
+      setBuscandoPaciente(false);
+    }
+  }
+
+  function manejarCambioRut(valor) {
+    const formateado = formatearRutChileno(valor);
+    setIdentificador(formateado);
+    setPacienteEncontrado(false);
+
+    setErroresFormulario((prev) => ({
+      ...prev,
+      identificador: "",
+    }));
+  }
+
+  function manejarBlurRut() {
+    const rutFormateado = formatearRutChileno(identificador);
+    setIdentificador(rutFormateado);
+
+    const rutError = obtenerMensajeErrorRut(rutFormateado);
+
+    if (rutError) {
+      setErroresFormulario((prev) => ({
+        ...prev,
+        identificador: rutError,
+      }));
+      return;
     }
 
-    if (!normalizarTexto(apellidos)) {
-      alert("Ingresa tu apellido.");
-      return false;
-    }
+    setErroresFormulario((prev) => ({
+      ...prev,
+      identificador: "",
+    }));
+
+    buscarPacientePorRut(rutFormateado);
+  }
+
+  function validarFormulario() {
+    const errores = {};
+
+    const rutFormateado = formatearRutChileno(identificador);
+    const rutError = obtenerMensajeErrorRut(rutFormateado);
+    if (rutError) errores.identificador = rutError;
+
+    if (!normalizarTexto(nombres)) errores.nombres = "Ingresa tu nombre.";
+    if (!normalizarTexto(apellidos)) errores.apellidos = "Ingresa tu apellido.";
 
     if (!normalizarTexto(email)) {
-      alert("Ingresa tu correo electrónico.");
-      return false;
+      errores.email = "Ingresa tu correo electrónico.";
+    } else if (!validarEmail(email)) {
+      errores.email = "Ingresa un correo electrónico válido.";
     }
 
     if (!normalizarTexto(telefono)) {
-      alert("Ingresa tu teléfono.");
-      return false;
+      errores.telefono = "Ingresa tu celular.";
+    } else if (!validarCelularChileno(telefono)) {
+      errores.telefono =
+        "Ingresa un celular chileno válido. Ejemplo: +56912345678.";
     }
 
     if (!aceptaCondiciones) {
-      alert("Debes aceptar las condiciones generales de reserva.");
-      return false;
+      errores.aceptaCondiciones =
+        "Debes aceptar las condiciones generales de reserva.";
     }
 
-    return true;
+    setErroresFormulario(errores);
+
+    return Object.keys(errores).length === 0;
   }
 
-  async function confirmarReservaPublica() {
-    if (!validarDatosAdministrativos()) return;
-    if (reservando) return;
+  async function confirmarReserva() {
+    if (!slotSeleccionado) {
+      setPaso("horario");
+      return;
+    }
+
+    if (!validarFormulario()) return;
 
     setReservando(true);
     setError("");
 
-    try {
-      const payload = {
-        p_slug_publico: profesional?.slug_publico || slugPublico,
-        p_fecha: slotSeleccionado.fecha,
-        p_hora_inicio: slotSeleccionado.hora,
-        p_hora_fin: slotSeleccionado.hora_fin,
-        p_nombres: normalizarTexto(nombres),
-        p_apellidos: normalizarTexto(apellidos),
-        p_email: normalizarTexto(email).toLowerCase(),
-        p_telefono: normalizarTexto(telefono),
-        p_identificador: normalizarTexto(identificador) || null,
-        p_primera_atencion: primeraAtencion || null,
-        p_canal_contacto: canalContacto || null,
-      };
+    const rutFormateado = formatearRutChileno(identificador);
+    const telefonoNormalizado = normalizarTelefonoChileno(telefono);
 
+    try {
       const { data, error: reservaError } = await supabase.rpc(
         "reservar_hora_publica",
-        payload
+        {
+          p_slug_publico: slugPublico,
+          p_fecha: slotSeleccionado.fecha,
+          p_hora_inicio: slotSeleccionado.hora,
+          p_hora_fin: slotSeleccionado.hora_fin,
+          p_nombres: normalizarTexto(nombres),
+          p_apellidos: normalizarTexto(apellidos),
+          p_email: normalizarTexto(email).toLowerCase(),
+          p_telefono: telefonoNormalizado,
+          p_identificador: rutFormateado,
+          p_primera_atencion: primeraAtencion || null,
+          p_canal_contacto: canalContacto,
+        }
       );
 
       if (reservaError) throw reservaError;
 
       const resultado = Array.isArray(data) ? data[0] : data;
 
-      if (typeof onContinuar === "function") {
-        onContinuar({ resultado, payload });
-      }
+      setReservaConfirmada({
+        ...resultado,
+        slot: slotSeleccionado,
+        paciente: {
+          nombres: normalizarTexto(nombres),
+          apellidos: normalizarTexto(apellidos),
+          identificador: rutFormateado,
+          email: normalizarTexto(email).toLowerCase(),
+          telefono: telefonoNormalizado,
+        },
+      });
+
+      setPaso("confirmacion");
 
       if (typeof onReservaExitosa === "function") {
-        onReservaExitosa({ resultado, payload });
+        onReservaExitosa(resultado);
       }
-
-      alert(
-        resultado?.mensaje ||
-          "Hora reservada correctamente. La reserva quedó sujeta a confirmación operativa del profesional."
-      );
-
-      setSlotSeleccionado(null);
-      setNombres("");
-      setApellidos("");
-      setIdentificador("");
-      setEmail("");
-      setTelefono("");
-      setPrimeraAtencion("");
-      setCanalContacto("WhatsApp");
-      setAceptaCondiciones(false);
 
       await cargarDisponibilidadPublica(profesionalId);
     } catch (err) {
-      console.error("Error confirmando reserva pública:", err);
-      setError(err?.message || "No fue posible guardar la reserva.");
-      alert("No fue posible guardar la reserva: " + (err?.message || "Error desconocido"));
+      console.error("Error confirmando reserva:", err);
+      setError(err.message || "No fue posible confirmar la reserva.");
     } finally {
       setReservando(false);
     }
   }
 
-  function irSemanaAnterior() {
-    setFechaInicioSemana((actual) => sumarDias(actual, -7));
-  }
-
-  function irSemanaSiguiente() {
-    setFechaInicioSemana((actual) => sumarDias(actual, 7));
-  }
-
-  function irSemanaActual() {
-    setFechaInicioSemana(obtenerInicioSemana());
-  }
-
   const nombreProfesional = formatearNombreProfesional(profesional);
-  const cargando = cargandoPerfil || cargandoDisponibilidad;
 
   return (
-    <main className="min-h-screen bg-[#eef8fb] px-4 py-6 text-slate-800 lg:px-8">
-      <div className="mx-auto w-full max-w-[1600px]">
+    <main className="min-h-screen bg-[#eef8fb] px-4 py-5 text-slate-800 lg:px-8">
+      <div className="mx-auto w-full max-w-5xl">
         {goBack && (
           <button onClick={goBack} className="mb-4 font-bold text-cyan-700">
             ← Volver
           </button>
         )}
 
-        <section className="mb-6 overflow-hidden rounded-[32px] bg-white shadow">
-          <div className="grid gap-0 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="p-7 lg:p-9">
-              <p className="text-sm font-black uppercase tracking-widest text-cyan-600">
-                Reserva pública FluyePro
-              </p>
+        <header className="mb-5 rounded-[28px] bg-white p-5 shadow lg:p-7">
+          <p className="text-xs font-black uppercase tracking-[0.25em] text-cyan-700">
+            Reserva pública FluyePro
+          </p>
 
-              <h1 className="mt-3 text-3xl font-black text-slate-900 lg:text-4xl">
+          <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h1 className="text-3xl font-black tracking-tight text-slate-950 lg:text-5xl">
                 Reserva tu hora
               </h1>
 
-              {profesional ? (
-                <div className="mt-5 space-y-3">
-                  <div>
-                    <p className="text-sm font-bold uppercase tracking-wide text-slate-400">
-                      Profesional
-                    </p>
-                    <p className="text-2xl font-black text-slate-900">
-                      {nombreProfesional || "Profesional"}
-                    </p>
-                  </div>
-
-                  <p className="max-w-3xl text-slate-600">
-                    {profesional.descripcion_publica ||
-                      "Selecciona un horario disponible y completa tus datos administrativos mínimos para continuar con la reserva."}
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-4 max-w-3xl text-slate-600">
-                  {cargandoPerfil
-                    ? "Estamos cargando la información pública del profesional."
-                    : "No fue posible cargar el perfil público del profesional."}
+              {cargandoPerfil ? (
+                <p className="mt-3 text-slate-600">Cargando profesional...</p>
+              ) : error && !profesional ? (
+                <p className="mt-3 rounded-2xl bg-red-50 p-4 font-bold text-red-700">
+                  {error}
                 </p>
+              ) : (
+                <>
+                  <h2 className="mt-3 text-xl font-black text-slate-900">
+                    {nombreProfesional || "Profesional"}
+                  </h2>
+
+                  <p className="mt-1 text-sm text-slate-600">
+                    {profesional?.especialidad_publica ||
+                      profesional?.profesion ||
+                      "Salud mental"}
+                    {" · "}
+                    {profesional?.modalidad_atencion || "Online"}
+                    {" · "}
+                    {profesional?.duracion_sesion_minutos || 50} min
+                  </p>
+                </>
               )}
             </div>
 
-            <div className="bg-gradient-to-br from-cyan-50 to-emerald-50 p-7 lg:p-9">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl bg-white/80 p-4 shadow-sm">
-                  <p className="text-xs font-black uppercase text-slate-400">
-                    Profesión / especialidad
-                  </p>
-                  <p className="mt-1 font-black text-slate-800">
-                    {profesional?.especialidad_publica ||
-                      profesional?.profesion ||
-                      "Profesional de salud mental"}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-white/80 p-4 shadow-sm">
-                  <p className="text-xs font-black uppercase text-slate-400">
-                    Modalidad
-                  </p>
-                  <p className="mt-1 font-black capitalize text-slate-800">
-                    {profesional?.modalidad_atencion || "Online"}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-white/80 p-4 shadow-sm">
-                  <p className="text-xs font-black uppercase text-slate-400">
-                    Duración estimada
-                  </p>
-                  <p className="mt-1 font-black text-slate-800">
-                    {profesional?.duracion_sesion_minutos || 50} minutos
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-white/80 p-4 shadow-sm">
-                  <p className="text-xs font-black uppercase text-slate-400">
-                    Enlace
-                  </p>
-                  <p className="mt-1 break-all text-sm font-black text-slate-800">
-                    /reservar/{slugPublico || "profesional"}
-                  </p>
-                </div>
-              </div>
+            <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
+              Solo datos administrativos. Sin contenido clínico.
             </div>
           </div>
-        </section>
+        </header>
 
-        {error && (
-          <section className="mb-6 rounded-3xl border border-red-200 bg-red-50 p-5 text-red-800">
-            <p className="font-black">No fue posible cargar la reserva</p>
-            <p className="mt-1 text-sm">{error}</p>
+        {error && profesional && (
+          <div className="mb-5 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-bold text-red-700">
+            {error}
+          </div>
+        )}
+
+        {profesional && paso !== "confirmacion" && (
+          <div className="mb-5 grid grid-cols-3 gap-2 rounded-2xl bg-cyan-100 p-1 text-sm font-black">
+            <button
+              type="button"
+              onClick={() => setPaso("horario")}
+              className={`rounded-xl py-2 ${
+                paso === "horario" ? "bg-white text-cyan-800" : "text-slate-500"
+              }`}
+            >
+              1. Horario
+            </button>
+
+            <button
+              type="button"
+              onClick={() => slotSeleccionado && setPaso("datos")}
+              className={`rounded-xl py-2 ${
+                paso === "datos" ? "bg-white text-cyan-800" : "text-slate-500"
+              }`}
+            >
+              2. Datos
+            </button>
+
+            <button type="button" disabled className="rounded-xl py-2 text-slate-400">
+              3. Confirmar
+            </button>
+          </div>
+        )}
+
+        {profesional && paso === "horario" && (
+          <section className="rounded-[28px] bg-white p-5 shadow lg:p-7">
+            <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-2xl font-black">Elige un horario</h2>
+                <p className="text-sm text-slate-500">
+                  Semana {formatearRangoSemana(semana)}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={semanaAnterior}
+                  className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
+                >
+                  ← Semana anterior
+                </button>
+
+                <button
+                  type="button"
+                  onClick={volverAHoy}
+                  className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
+                >
+                  Hoy
+                </button>
+
+                <button
+                  type="button"
+                  onClick={semanaSiguiente}
+                  className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
+                >
+                  Semana siguiente →
+                </button>
+              </div>
+            </div>
+
+            {cargandoDisponibilidad ? (
+              <p className="rounded-2xl bg-slate-50 p-4 text-slate-500">
+                Cargando disponibilidad...
+              </p>
+            ) : disponibilidad.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 p-4 text-slate-500">
+                Este profesional aún no tiene disponibilidad pública configurada.
+              </p>
+            ) : (
+              <>
+                <div className="mb-5 flex gap-2 overflow-x-auto pb-2">
+                  {diasConSlots.map((dia) => {
+                    const activo = fechaSeleccionada === dia.fecha;
+
+                    return (
+                      <button
+                        key={dia.fecha}
+                        type="button"
+                        onClick={() => setFechaSeleccionada(dia.fecha)}
+                        className={`min-w-[92px] rounded-2xl px-3 py-3 text-center font-black ${
+                          activo
+                            ? "bg-[#18AFC1] text-white shadow"
+                            : "border border-cyan-100 bg-white text-cyan-700"
+                        }`}
+                      >
+                        <span className="block text-xs">{dia.dia.slice(0, 3)}</span>
+                        <span className="block text-sm">{dia.etiqueta}</span>
+                        <span className="mt-1 block text-[11px] opacity-80">
+                          {dia.slots.length} hrs
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div>
+                  <h3 className="mb-3 text-sm font-black uppercase tracking-wide text-slate-400">
+                    Horas disponibles
+                  </h3>
+
+                  {slotsDiaSeleccionado.length === 0 ? (
+                    <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
+                      No hay horarios disponibles para este día.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                      {slotsDiaSeleccionado.map((slot) => {
+                        const activo =
+                          slotSeleccionado?.fecha === slot.fecha &&
+                          slotSeleccionado?.hora === slot.hora;
+
+                        return (
+                          <button
+                            key={`${slot.fecha}-${slot.hora}-${slot.hora_fin}`}
+                            type="button"
+                            onClick={() => seleccionarSlot(slot)}
+                            className={`rounded-2xl px-4 py-4 text-left font-black ${
+                              activo
+                                ? "bg-[#18AFC1] text-white shadow"
+                                : "border border-cyan-100 bg-white text-cyan-700 hover:bg-cyan-50"
+                            }`}
+                          >
+                            <span className="block text-lg">{slot.hora}</span>
+                            <span className="text-xs opacity-80">
+                              hasta {slot.hora_fin}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </section>
         )}
 
-        <section className="rounded-[32px] bg-white p-5 shadow lg:p-7">
-          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h2 className="text-2xl font-black text-slate-900">
-                Horarios disponibles
-              </h2>
-              <p className="text-sm text-slate-500">
-                Semana {formatearRangoSemana(semana)}
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={irSemanaAnterior}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50"
-              >
-                Semana anterior
-              </button>
-              <button
-                type="button"
-                onClick={irSemanaActual}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50"
-              >
-                Semana actual
-              </button>
-              <button
-                type="button"
-                onClick={irSemanaSiguiente}
-                className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-black text-white hover:bg-cyan-700"
-              >
-                Semana siguiente
-              </button>
-            </div>
-          </div>
-
-          {cargando ? (
-            <div className="rounded-3xl border border-slate-100 bg-slate-50 p-8 text-center font-bold text-slate-500">
-              Cargando disponibilidad...
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-7">
-              {semana.map((dia) => {
-                const slots = obtenerSlotsDelDia(dia);
-
-                return (
-                  <div
-                    key={dia.fecha}
-                    className="min-h-[260px] rounded-2xl border border-slate-100 bg-slate-50 p-3"
-                  >
-                    <div className="mb-3">
-                      <p className="text-sm font-black text-slate-900">
-                        {dia.dia}
-                      </p>
-                      <p className="text-xs font-bold text-slate-400">
-                        {dia.etiqueta}
-                      </p>
-                    </div>
-
-                    {slots.length === 0 ? (
-                      <p className="rounded-xl bg-white p-3 text-center text-xs font-bold text-slate-400">
-                        Sin horarios disponibles
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {slots.map((slot) => {
-                          const seleccionado =
-                            slotSeleccionado?.fecha === slot.fecha &&
-                            slotSeleccionado?.hora === slot.hora;
-
-                          return (
-                            <button
-                              key={`${slot.fecha}-${slot.hora}`}
-                              type="button"
-                              onClick={() => setSlotSeleccionado(slot)}
-                              className={`w-full rounded-xl px-3 py-2 text-left text-sm font-black transition ${
-                                seleccionado
-                                  ? "bg-cyan-600 text-white shadow"
-                                  : "bg-white text-cyan-700 hover:bg-cyan-50"
-                              }`}
-                            >
-                              {slot.hora} - {slot.hora_fin}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {slotSeleccionado && (
-          <section className="mt-6 grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="rounded-[32px] bg-white p-6 shadow">
-              <p className="text-sm font-black uppercase tracking-wide text-cyan-600">
-                Horario seleccionado
-              </p>
-              <h3 className="mt-2 text-2xl font-black text-slate-900">
+        {profesional && paso === "datos" && slotSeleccionado && (
+          <section className="rounded-[28px] bg-white p-5 shadow lg:p-7">
+            <div className="mb-5 rounded-2xl bg-cyan-50 p-4 text-sm">
+              <p className="font-black text-cyan-700">Horario seleccionado</p>
+              <p className="mt-1 capitalize text-slate-700">
                 {formatearFechaLarga(slotSeleccionado.fecha)}
-              </h3>
-              <p className="mt-2 text-xl font-black text-cyan-700">
+              </p>
+              <p className="font-black text-slate-900">
                 {slotSeleccionado.hora} - {slotSeleccionado.hora_fin}
               </p>
-              <p className="mt-2 text-sm text-slate-500">
-                Duración estimada: {slotSeleccionado.duracion} minutos
-              </p>
             </div>
 
-            <div className="rounded-[32px] bg-white p-6 shadow">
-              <h3 className="text-xl font-black text-slate-900">
-                Datos administrativos mínimos
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">
-                No solicitamos contenido clínico sensible en esta etapa.
-              </p>
+            <h2 className="text-2xl font-black">Tus datos</h2>
+            <p className="mb-5 mt-1 text-sm text-slate-500">
+              Ingresa primero tu RUT. Si ya eres paciente, completaremos tus
+              datos administrativos guardados.
+            </p>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-600">Nombre</span>
-                  <input
-                    value={nombres}
-                    onChange={(e) => setNombres(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
-                    placeholder="Nombre"
-                  />
-                </label>
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-1 block text-sm font-black text-slate-700">
+                  RUT chileno *
+                </span>
 
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-600">Apellido</span>
-                  <input
-                    value={apellidos}
-                    onChange={(e) => setApellidos(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
-                    placeholder="Apellido"
-                  />
-                </label>
+                <input
+                  placeholder="12.345.678-K"
+                  value={identificador}
+                  onChange={(e) => manejarCambioRut(e.target.value)}
+                  onBlur={manejarBlurRut}
+                  className={`w-full rounded-xl border px-4 py-3 uppercase outline-cyan-400 ${
+                    erroresFormulario.identificador
+                      ? "border-red-300 bg-red-50"
+                      : ""
+                  }`}
+                />
 
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-600">Correo electrónico</span>
-                  <input
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
-                    placeholder="correo@ejemplo.com"
-                    type="email"
-                  />
-                </label>
+                {buscandoPaciente && (
+                  <p className="mt-1 text-xs font-bold text-cyan-700">
+                    Buscando paciente...
+                  </p>
+                )}
 
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-600">Teléfono</span>
-                  <input
-                    value={telefono}
-                    onChange={(e) => setTelefono(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
-                    placeholder="+56 9 ..."
-                  />
-                </label>
+                {pacienteEncontrado && (
+                  <p className="mt-1 text-xs font-bold text-emerald-700">
+                    Encontramos tus datos administrativos guardados.
+                  </p>
+                )}
 
-                <label className="block">
-                  <span className="text-sm font-bold text-slate-600">RUT o identificador</span>
-                  <input
-                    value={identificador}
-                    onChange={(e) => setIdentificador(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
-                    placeholder="Opcional"
-                  />
-                </label>
+                {erroresFormulario.identificador && (
+                  <p className="mt-1 text-xs font-bold text-red-600">
+                    {erroresFormulario.identificador}
+                  </p>
+                )}
+              </label>
 
+              <div className="grid gap-4 sm:grid-cols-2">
+                <CampoTexto
+                  label="Nombre *"
+                  value={nombres}
+                  onChange={setNombres}
+                  error={erroresFormulario.nombres}
+                />
+
+                <CampoTexto
+                  label="Apellido *"
+                  value={apellidos}
+                  onChange={setApellidos}
+                  error={erroresFormulario.apellidos}
+                />
+              </div>
+
+              <CampoTexto
+                label="Correo electrónico *"
+                type="email"
+                value={email}
+                onChange={setEmail}
+                error={erroresFormulario.email}
+                placeholder="nombre@correo.cl"
+              />
+
+              <CampoTexto
+                label="Celular chileno *"
+                value={telefono}
+                onChange={setTelefono}
+                onBlur={() => setTelefono(normalizarTelefonoChileno(telefono))}
+                error={erroresFormulario.telefono}
+                placeholder="+56912345678"
+              />
+
+              <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block">
-                  <span className="text-sm font-bold text-slate-600">Canal preferido</span>
+                  <span className="mb-1 block text-sm font-black text-slate-700">
+                    Canal preferido
+                  </span>
+
                   <select
                     value={canalContacto}
                     onChange={(e) => setCanalContacto(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
+                    className="w-full rounded-xl border px-4 py-3 outline-cyan-400"
                   >
                     {CANALES_CONTACTO.map((canal) => (
                       <option key={canal} value={canal}>
@@ -796,45 +1083,127 @@ export default function ReservarHoraPage({
                   </select>
                 </label>
 
-                <label className="block md:col-span-2">
-                  <span className="text-sm font-bold text-slate-600">¿Es primera atención?</span>
+                <label className="block">
+                  <span className="mb-1 block text-sm font-black text-slate-700">
+                    ¿Es primera atención?
+                  </span>
+
                   <select
                     value={primeraAtencion}
                     onChange={(e) => setPrimeraAtencion(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-cyan-500"
+                    className="w-full rounded-xl border px-4 py-3 outline-cyan-400"
                   >
-                    <option value="">Seleccionar</option>
                     <option value="si">Sí</option>
                     <option value="no">No</option>
                   </select>
                 </label>
               </div>
 
-              <label className="mt-5 flex items-start gap-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+              <label className="flex items-start gap-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
                 <input
                   type="checkbox"
                   checked={aceptaCondiciones}
                   onChange={(e) => setAceptaCondiciones(e.target.checked)}
                   className="mt-1"
                 />
+
                 <span>
-                  Acepto las condiciones generales de reserva. {" "}
-                  {profesional?.condiciones_reserva ||
-                    "La reserva está sujeta a confirmación operativa del profesional."}
+                  Acepto las condiciones generales de reserva. Entiendo que esta
+                  página no solicita información clínica sensible.
                 </span>
               </label>
 
-              <div className="mt-6 flex justify-end">
+              {erroresFormulario.aceptaCondiciones && (
+                <p className="text-xs font-bold text-red-600">
+                  {erroresFormulario.aceptaCondiciones}
+                </p>
+              )}
+
+              <div className="flex flex-col gap-3 sm:flex-row">
                 <button
                   type="button"
-                  onClick={confirmarReservaPublica}
-                  disabled={reservando}
-                  className="rounded-2xl bg-slate-900 px-6 py-3 font-black text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => setPaso("horario")}
+                  className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-black text-slate-700 hover:bg-slate-50"
                 >
-                  {reservando ? "Guardando reserva..." : "Confirmar reserva"}
+                  Cambiar horario
+                </button>
+
+                <button
+                  type="button"
+                  onClick={confirmarReserva}
+                  disabled={reservando}
+                  className="flex-1 rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {reservando ? "Reservando..." : "Confirmar reserva"}
                 </button>
               </div>
             </div>
+          </section>
+        )}
+
+        {paso === "confirmacion" && reservaConfirmada && (
+          <section className="rounded-[28px] bg-white p-6 text-center shadow lg:p-8">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-3xl text-emerald-700">
+              ✓
+            </div>
+
+            <h2 className="text-3xl font-black text-slate-950">
+              Reserva recibida
+            </h2>
+
+            <p className="mx-auto mt-3 max-w-2xl text-slate-600">
+              Tu solicitud fue registrada correctamente. La reserva quedó sujeta
+              a confirmación operativa del profesional.
+            </p>
+
+            <div className="mx-auto mt-6 max-w-xl rounded-2xl bg-cyan-50 p-4 text-left">
+              <p className="text-sm font-black text-cyan-700">
+                Horario solicitado
+              </p>
+
+              <p className="mt-1 capitalize text-slate-700">
+                {formatearFechaLarga(reservaConfirmada.slot.fecha)}
+              </p>
+
+              <p className="font-black text-slate-900">
+                {reservaConfirmada.slot.hora} -{" "}
+                {reservaConfirmada.slot.hora_fin}
+              </p>
+            </div>
+
+            <div className="mx-auto mt-4 max-w-xl rounded-2xl bg-slate-50 p-4 text-left">
+              <p className="text-sm font-black text-slate-700">Paciente</p>
+
+              <p className="mt-1 font-bold text-slate-900">
+                {reservaConfirmada.paciente.nombres}{" "}
+                {reservaConfirmada.paciente.apellidos}
+              </p>
+
+              <p className="text-sm text-slate-500">
+                {reservaConfirmada.paciente.identificador}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setReservaConfirmada(null);
+                setSlotSeleccionado(null);
+                setIdentificador("");
+                setNombres("");
+                setApellidos("");
+                setEmail("");
+                setTelefono("");
+                setPrimeraAtencion("si");
+                setCanalContacto("WhatsApp");
+                setAceptaCondiciones(false);
+                setPacienteEncontrado(false);
+                setPaso("horario");
+              }}
+              className="mt-6 rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white hover:bg-cyan-700"
+            >
+              Hacer otra reserva
+            </button>
           </section>
         )}
       </div>
