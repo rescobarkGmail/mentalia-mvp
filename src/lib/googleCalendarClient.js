@@ -65,7 +65,7 @@ export async function obtenerAccessTokenGoogleCalendar() {
     });
 
     client.requestAccessToken({
-      prompt: "consent",
+      prompt: "",
     });
   });
 }
