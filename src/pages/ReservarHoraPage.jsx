@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 const DIAS = [
@@ -57,9 +57,7 @@ function obtenerSlugDesdeUrl() {
   const indiceReservar = partes.findIndex((parte) => parte === "reservar");
 
   if (indiceReservar >= 0 && partes[indiceReservar + 1]) {
-    return decodeURIComponent(partes[indiceReservar + 1])
-      .trim()
-      .toLowerCase();
+    return decodeURIComponent(partes[indiceReservar + 1]).trim().toLowerCase();
   }
 
   return "";
@@ -216,8 +214,7 @@ function validarRutChileno(rut) {
 
   const resto = suma % 11;
   const resultado = 11 - resto;
-  const dvEsperado =
-    resultado === 11 ? "0" : resultado === 10 ? "K" : String(resultado);
+  const dvEsperado = resultado === 11 ? "0" : resultado === 10 ? "K" : String(resultado);
 
   return dv === dvEsperado;
 }
@@ -252,41 +249,8 @@ function validarCelularChileno(valor) {
 
 function obtenerMensajeErrorRut(rut) {
   if (!normalizarTexto(rut)) return "El RUT es obligatorio.";
-  if (!validarRutChileno(rut)) {
-    return "Ingresa un RUT chileno válido. Ejemplo: 12.345.678-K.";
-  }
+  if (!validarRutChileno(rut)) return "Ingresa un RUT chileno válido. Ejemplo: 12.345.678-K.";
   return "";
-}
-
-function CampoTexto({
-  label,
-  value,
-  onChange,
-  error,
-  type = "text",
-  placeholder = "",
-  onBlur,
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-black text-slate-700">
-        {label}
-      </span>
-
-      <input
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        className={`w-full rounded-xl border px-4 py-3 outline-cyan-400 ${
-          error ? "border-red-300 bg-red-50" : ""
-        }`}
-      />
-
-      {error && <p className="mt-1 text-xs font-bold text-red-600">{error}</p>}
-    </label>
-  );
 }
 
 export default function ReservarHoraPage({
@@ -314,6 +278,7 @@ export default function ReservarHoraPage({
   const [reservando, setReservando] = useState(false);
   const [buscandoPaciente, setBuscandoPaciente] = useState(false);
   const [pacienteEncontrado, setPacienteEncontrado] = useState(false);
+  const rutActualRef = useRef("");
 
   const [identificador, setIdentificador] = useState("");
   const [nombres, setNombres] = useState("");
@@ -387,13 +352,8 @@ export default function ReservarHoraPage({
 
   useEffect(() => {
     if (!fechaSeleccionada) {
-      const primerDiaDisponible = diasConSlots.find(
-        (dia) => dia.slots.length > 0
-      );
-
-      if (primerDiaDisponible) {
-        setFechaSeleccionada(primerDiaDisponible.fecha);
-      }
+      const primerDiaDisponible = diasConSlots.find((dia) => dia.slots.length > 0);
+      if (primerDiaDisponible) setFechaSeleccionada(primerDiaDisponible.fecha);
     }
   }, [diasConSlots, fechaSeleccionada]);
 
@@ -473,9 +433,7 @@ export default function ReservarHoraPage({
       setReservasOcupadas(ocupadas || []);
     } catch (err) {
       console.error("Error cargando disponibilidad pública:", err);
-      setError(
-        `No fue posible cargar la disponibilidad pública: ${err.message}`
-      );
+      setError(`No fue posible cargar la disponibilidad pública: ${err.message}`);
       setDisponibilidad([]);
       setReservasOcupadas([]);
     } finally {
@@ -517,11 +475,7 @@ export default function ReservarHoraPage({
         Number(profesional?.duracion_sesion_minutos) ||
         50;
 
-      const horas = generarSlots(
-        bloque.hora_inicio,
-        bloque.hora_fin,
-        duracion
-      );
+      const horas = generarSlots(bloque.hora_inicio, bloque.hora_fin, duracion);
 
       horas.forEach((hora) => {
         const pasado = fechaHoraEsPasada(dia.fecha, hora);
@@ -542,15 +496,12 @@ export default function ReservarHoraPage({
     });
 
     const unicos = new Map();
-
     slots.forEach((slot) => {
       const clave = `${slot.fecha}-${slot.hora}-${slot.hora_fin}`;
       unicos.set(clave, slot);
     });
 
-    return Array.from(unicos.values()).sort((a, b) =>
-      a.hora.localeCompare(b.hora)
-    );
+    return Array.from(unicos.values()).sort((a, b) => a.hora.localeCompare(b.hora));
   }
 
   function seleccionarSlot(slot) {
@@ -580,32 +531,50 @@ export default function ReservarHoraPage({
     setPaso("horario");
   }
 
+  function limpiarDatosPacientePorCambioRut() {
+    setNombres("");
+    setApellidos("");
+    setEmail("");
+    setTelefono("");
+    setPacienteEncontrado(false);
+
+    setErroresFormulario((prev) => ({
+      ...prev,
+      nombres: "",
+      apellidos: "",
+      email: "",
+      telefono: "",
+    }));
+  }
+
   async function buscarPacientePorRut(rutFormateado) {
-    const rutError = obtenerMensajeErrorRut(rutFormateado);
+    const rutConsulta = formatearRutChileno(rutFormateado);
+    const rutError = obtenerMensajeErrorRut(rutConsulta);
 
     if (rutError || !slugPublico) {
       console.warn("No se busca paciente por RUT:", {
         rutError,
         slugPublico,
-        rutFormateado,
+        rutConsulta,
       });
       return;
     }
 
+    rutActualRef.current = rutConsulta;
     setBuscandoPaciente(true);
     setPacienteEncontrado(false);
 
     try {
       console.log("Buscando paciente por RUT:", {
         p_slug_publico: slugPublico,
-        p_rut: rutFormateado,
+        p_rut: rutConsulta,
       });
 
       const { data, error: rpcError } = await supabase.rpc(
         "buscar_paciente_publico_por_rut",
         {
           p_slug_publico: slugPublico,
-          p_rut: rutFormateado,
+          p_rut: rutConsulta,
         }
       );
 
@@ -615,6 +584,14 @@ export default function ReservarHoraPage({
       });
 
       if (rpcError) throw rpcError;
+
+      if (rutActualRef.current !== rutConsulta) {
+        console.warn("Se descartó respuesta de RUT antiguo:", {
+          rutConsulta,
+          rutActual: rutActualRef.current,
+        });
+        return;
+      }
 
       const paciente = Array.isArray(data) ? data[0] : null;
 
@@ -628,8 +605,13 @@ export default function ReservarHoraPage({
         setErroresFormulario((prev) => ({
           ...prev,
           identificador: "",
+          nombres: "",
+          apellidos: "",
+          email: "",
+          telefono: "",
         }));
       } else {
+        limpiarDatosPacientePorCambioRut();
         setPacienteEncontrado(false);
       }
     } catch (err) {
@@ -641,14 +623,18 @@ export default function ReservarHoraPage({
           "No se pudo buscar el paciente. Puedes continuar ingresando los datos manualmente.",
       }));
     } finally {
-      setBuscandoPaciente(false);
+      if (rutActualRef.current === rutConsulta) {
+        setBuscandoPaciente(false);
+      }
     }
   }
 
   function manejarCambioRut(valor) {
     const formateado = formatearRutChileno(valor);
+
+    rutActualRef.current = formateado;
     setIdentificador(formateado);
-    setPacienteEncontrado(false);
+    limpiarDatosPacientePorCambioRut();
 
     setErroresFormulario((prev) => ({
       ...prev,
@@ -658,11 +644,15 @@ export default function ReservarHoraPage({
 
   function manejarBlurRut() {
     const rutFormateado = formatearRutChileno(identificador);
+
+    rutActualRef.current = rutFormateado;
     setIdentificador(rutFormateado);
 
     const rutError = obtenerMensajeErrorRut(rutFormateado);
 
     if (rutError) {
+      limpiarDatosPacientePorCambioRut();
+
       setErroresFormulario((prev) => ({
         ...prev,
         identificador: rutError,
@@ -697,13 +687,11 @@ export default function ReservarHoraPage({
     if (!normalizarTexto(telefono)) {
       errores.telefono = "Ingresa tu celular.";
     } else if (!validarCelularChileno(telefono)) {
-      errores.telefono =
-        "Ingresa un celular chileno válido. Ejemplo: +56912345678.";
+      errores.telefono = "Ingresa un celular chileno válido. Ejemplo: +56912345678.";
     }
 
     if (!aceptaCondiciones) {
-      errores.aceptaCondiciones =
-        "Debes aceptar las condiciones generales de reserva.";
+      errores.aceptaCondiciones = "Debes aceptar las condiciones generales de reserva.";
     }
 
     setErroresFormulario(errores);
@@ -807,11 +795,8 @@ export default function ReservarHoraPage({
                   <h2 className="mt-3 text-xl font-black text-slate-900">
                     {nombreProfesional || "Profesional"}
                   </h2>
-
                   <p className="mt-1 text-sm text-slate-600">
-                    {profesional?.especialidad_publica ||
-                      profesional?.profesion ||
-                      "Salud mental"}
+                    {profesional?.especialidad_publica || profesional?.profesion || "Salud mental"}
                     {" · "}
                     {profesional?.modalidad_atencion || "Online"}
                     {" · "}
@@ -838,24 +823,22 @@ export default function ReservarHoraPage({
             <button
               type="button"
               onClick={() => setPaso("horario")}
-              className={`rounded-xl py-2 ${
-                paso === "horario" ? "bg-white text-cyan-800" : "text-slate-500"
-              }`}
+              className={`rounded-xl py-2 ${paso === "horario" ? "bg-white text-cyan-800" : "text-slate-500"}`}
             >
               1. Horario
             </button>
-
             <button
               type="button"
               onClick={() => slotSeleccionado && setPaso("datos")}
-              className={`rounded-xl py-2 ${
-                paso === "datos" ? "bg-white text-cyan-800" : "text-slate-500"
-              }`}
+              className={`rounded-xl py-2 ${paso === "datos" ? "bg-white text-cyan-800" : "text-slate-500"}`}
             >
               2. Datos
             </button>
-
-            <button type="button" disabled className="rounded-xl py-2 text-slate-400">
+            <button
+              type="button"
+              disabled
+              className="rounded-xl py-2 text-slate-400"
+            >
               3. Confirmar
             </button>
           </div>
@@ -873,23 +856,18 @@ export default function ReservarHoraPage({
 
               <div className="flex flex-wrap gap-2">
                 <button
-                  type="button"
                   onClick={semanaAnterior}
                   className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
                 >
                   ← Semana anterior
                 </button>
-
                 <button
-                  type="button"
                   onClick={volverAHoy}
                   className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
                 >
                   Hoy
                 </button>
-
                 <button
-                  type="button"
                   onClick={semanaSiguiente}
                   className="rounded-xl border border-cyan-100 px-3 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
                 >
@@ -911,7 +889,6 @@ export default function ReservarHoraPage({
                 <div className="mb-5 flex gap-2 overflow-x-auto pb-2">
                   {diasConSlots.map((dia) => {
                     const activo = fechaSeleccionada === dia.fecha;
-
                     return (
                       <button
                         key={dia.fecha}
@@ -989,8 +966,7 @@ export default function ReservarHoraPage({
 
             <h2 className="text-2xl font-black">Tus datos</h2>
             <p className="mb-5 mt-1 text-sm text-slate-500">
-              Ingresa primero tu RUT. Si ya eres paciente, completaremos tus
-              datos administrativos guardados.
+              Ingresa primero tu RUT. Si ya eres paciente, completaremos tus datos administrativos guardados.
             </p>
 
             <div className="space-y-4">
@@ -998,31 +974,25 @@ export default function ReservarHoraPage({
                 <span className="mb-1 block text-sm font-black text-slate-700">
                   RUT chileno *
                 </span>
-
                 <input
                   placeholder="12.345.678-K"
                   value={identificador}
                   onChange={(e) => manejarCambioRut(e.target.value)}
                   onBlur={manejarBlurRut}
                   className={`w-full rounded-xl border px-4 py-3 uppercase outline-cyan-400 ${
-                    erroresFormulario.identificador
-                      ? "border-red-300 bg-red-50"
-                      : ""
+                    erroresFormulario.identificador ? "border-red-300 bg-red-50" : ""
                   }`}
                 />
-
                 {buscandoPaciente && (
                   <p className="mt-1 text-xs font-bold text-cyan-700">
                     Buscando paciente...
                   </p>
                 )}
-
                 {pacienteEncontrado && (
                   <p className="mt-1 text-xs font-bold text-emerald-700">
                     Encontramos tus datos administrativos guardados.
                   </p>
                 )}
-
                 {erroresFormulario.identificador && (
                   <p className="mt-1 text-xs font-bold text-red-600">
                     {erroresFormulario.identificador}
@@ -1037,7 +1007,6 @@ export default function ReservarHoraPage({
                   onChange={setNombres}
                   error={erroresFormulario.nombres}
                 />
-
                 <CampoTexto
                   label="Apellido *"
                   value={apellidos}
@@ -1058,7 +1027,7 @@ export default function ReservarHoraPage({
               <CampoTexto
                 label="Celular chileno *"
                 value={telefono}
-                onChange={setTelefono}
+                onChange={(valor) => setTelefono(normalizarTelefonoChileno(valor))}
                 onBlur={() => setTelefono(normalizarTelefonoChileno(telefono))}
                 error={erroresFormulario.telefono}
                 placeholder="+56912345678"
@@ -1069,7 +1038,6 @@ export default function ReservarHoraPage({
                   <span className="mb-1 block text-sm font-black text-slate-700">
                     Canal preferido
                   </span>
-
                   <select
                     value={canalContacto}
                     onChange={(e) => setCanalContacto(e.target.value)}
@@ -1087,7 +1055,6 @@ export default function ReservarHoraPage({
                   <span className="mb-1 block text-sm font-black text-slate-700">
                     ¿Es primera atención?
                   </span>
-
                   <select
                     value={primeraAtencion}
                     onChange={(e) => setPrimeraAtencion(e.target.value)}
@@ -1106,13 +1073,10 @@ export default function ReservarHoraPage({
                   onChange={(e) => setAceptaCondiciones(e.target.checked)}
                   className="mt-1"
                 />
-
                 <span>
-                  Acepto las condiciones generales de reserva. Entiendo que esta
-                  página no solicita información clínica sensible.
+                  Acepto las condiciones generales de reserva. Entiendo que esta página no solicita información clínica sensible.
                 </span>
               </label>
-
               {erroresFormulario.aceptaCondiciones && (
                 <p className="text-xs font-bold text-red-600">
                   {erroresFormulario.aceptaCondiciones}
@@ -1127,7 +1091,6 @@ export default function ReservarHoraPage({
                 >
                   Cambiar horario
                 </button>
-
                 <button
                   type="button"
                   onClick={confirmarReserva}
@@ -1143,70 +1106,66 @@ export default function ReservarHoraPage({
 
         {paso === "confirmacion" && reservaConfirmada && (
           <section className="rounded-[28px] bg-white p-6 text-center shadow lg:p-8">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-3xl text-emerald-700">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-3xl">
               ✓
             </div>
-
             <h2 className="text-3xl font-black text-slate-950">
               Reserva recibida
             </h2>
-
             <p className="mx-auto mt-3 max-w-2xl text-slate-600">
-              Tu solicitud fue registrada correctamente. La reserva quedó sujeta
-              a confirmación operativa del profesional.
+              Tu solicitud fue registrada correctamente. La reserva queda sujeta a confirmación operativa del profesional.
             </p>
-
-            <div className="mx-auto mt-6 max-w-xl rounded-2xl bg-cyan-50 p-4 text-left">
-              <p className="text-sm font-black text-cyan-700">
-                Horario solicitado
-              </p>
-
+            <div className="mx-auto mt-6 max-w-md rounded-2xl bg-cyan-50 p-4 text-sm text-left">
+              <p className="font-black text-cyan-700">Horario</p>
               <p className="mt-1 capitalize text-slate-700">
                 {formatearFechaLarga(reservaConfirmada.slot.fecha)}
               </p>
-
               <p className="font-black text-slate-900">
-                {reservaConfirmada.slot.hora} -{" "}
-                {reservaConfirmada.slot.hora_fin}
+                {reservaConfirmada.slot.hora} - {reservaConfirmada.slot.hora_fin}
               </p>
             </div>
-
-            <div className="mx-auto mt-4 max-w-xl rounded-2xl bg-slate-50 p-4 text-left">
-              <p className="text-sm font-black text-slate-700">Paciente</p>
-
-              <p className="mt-1 font-bold text-slate-900">
-                {reservaConfirmada.paciente.nombres}{" "}
-                {reservaConfirmada.paciente.apellidos}
-              </p>
-
-              <p className="text-sm text-slate-500">
-                {reservaConfirmada.paciente.identificador}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setReservaConfirmada(null);
-                setSlotSeleccionado(null);
-                setIdentificador("");
-                setNombres("");
-                setApellidos("");
-                setEmail("");
-                setTelefono("");
-                setPrimeraAtencion("si");
-                setCanalContacto("WhatsApp");
-                setAceptaCondiciones(false);
-                setPacienteEncontrado(false);
-                setPaso("horario");
-              }}
-              className="mt-6 rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white hover:bg-cyan-700"
-            >
-              Hacer otra reserva
-            </button>
           </section>
+        )}
+
+        {profesional && paso !== "confirmacion" && (
+          <footer className="mt-5 rounded-2xl bg-amber-50 p-4 text-xs leading-5 text-amber-800">
+            <p className="font-black">Condiciones generales</p>
+            <p className="mt-1">
+              {profesional?.condiciones_reserva ||
+                "La reserva está sujeta a confirmación operativa. No se debe ingresar información clínica en esta etapa."}
+            </p>
+          </footer>
         )}
       </div>
     </main>
+  );
+}
+
+function CampoTexto({
+  label,
+  value,
+  onChange,
+  onBlur,
+  error,
+  type = "text",
+  placeholder = "",
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-black text-slate-700">
+        {label}
+      </span>
+      <input
+        type={type}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        className={`w-full rounded-xl border px-4 py-3 outline-cyan-400 ${
+          error ? "border-red-300 bg-red-50" : ""
+        }`}
+      />
+      {error && <p className="mt-1 text-xs font-bold text-red-600">{error}</p>}
+    </label>
   );
 }
