@@ -163,7 +163,7 @@ export default function DisponibilidadPage({ user, goBack }) {
     setErrorGoogleCalendar("");
 
     try {
-      const accessToken = await obtenerAccessTokenGoogleCalendar();
+      const accessToken = await obtenerAccessTokenGoogleCalendar({ loginHint: user?.email });
       const eventos = await obtenerEventosDeLaSemana({
         accessToken,
         fechaReferencia,

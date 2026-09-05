@@ -4,6 +4,10 @@ import {
   obtenerAccessTokenGoogle,
   subirJsonSesionDrive,
 } from "../lib/googleDriveClient";
+import {
+  guardarSesionClinica,
+  obtenerSesionClinicaPorCita,
+} from "../lib/mentaliaApi";
 
 export default function SesionClinicaPage({ user, cita, goBack }) {
   const [guardando, setGuardando] = useState(false);
@@ -23,6 +27,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   const [audioUrl, setAudioUrl] = useState("");
   const [procesandoAudio, setProcesandoAudio] = useState(false);
   const [transcripcion, setTranscripcion] = useState("");
+  const [mensajeOperacion, setMensajeOperacion] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -61,11 +66,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   }
 
   async function cargarSesion() {
-    const { data } = await supabase
-      .from("sesiones_clinicas")
-      .select("*")
-      .eq("cita_id", cita.id)
-      .maybeSingle();
+    const data = await obtenerSesionClinicaPorCita(cita.id);
 
     if (!data || data.clinical_data_external) return;
 
@@ -116,7 +117,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
       mediaRecorder.start();
       setGrabando(true);
     } catch (error) {
-      alert("No se pudo iniciar la grabación: " + error.message);
+      setMensajeOperacion({ tipo: "error", texto: "No se pudo iniciar la grabación: " + error.message });
     }
   }
 
@@ -141,7 +142,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
 
   async function procesarAudioConIA() {
     if (!audioBlob) {
-      alert("Primero debes grabar un audio.");
+      setMensajeOperacion({ tipo: "error", texto: "Primero debes grabar un audio." });
       return;
     }
 
@@ -175,9 +176,9 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
       setTareasAcuerdos(data.tareas_acuerdos || "");
       setProximaSesion(data.proxima_sesion || "");
 
-      alert("Audio procesado correctamente con IA.");
+      setMensajeOperacion({ tipo: "success", texto: "Audio procesado correctamente con IA." });
     } catch (error) {
-      alert("Error al procesar audio con IA: " + error.message);
+      setMensajeOperacion({ tipo: "error", texto: "Error al procesar audio con IA: " + error.message });
     }
 
     setProcesandoAudio(false);
@@ -204,17 +205,11 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
 
     if (!pacienteId) {
       setGuardando(false);
-      alert("No se pudo identificar el paciente.");
+      setMensajeOperacion({ tipo: "error", texto: "No se pudo identificar el paciente." });
       return;
     }
 
     const sesionClinica = construirSesionClinica(estado);
-
-    const { data: existente } = await supabase
-      .from("sesiones_clinicas")
-      .select("id")
-      .eq("cita_id", cita.id)
-      .maybeSingle();
 
     let payload;
 
@@ -231,7 +226,6 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
 
         payload = {
           cita_id: cita.id,
-          profesional_id: user.id,
           paciente_id: pacienteId,
           estado,
           storage_provider: "google_drive",
@@ -248,13 +242,12 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
         };
       } catch (error) {
         setGuardando(false);
-        alert("Error al guardar en Google Drive: " + error.message);
+        setMensajeOperacion({ tipo: "error", texto: "Error al guardar en Google Drive: " + error.message });
         return;
       }
     } else {
       payload = {
         cita_id: cita.id,
-        profesional_id: user.id,
         paciente_id: pacienteId,
         estado,
         storage_provider: "mentalia_cloud",
@@ -265,43 +258,32 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
       };
     }
 
-    let error;
-
-    if (existente) {
-      const response = await supabase
-        .from("sesiones_clinicas")
-        .update(payload)
-        .eq("id", existente.id)
-        .eq("profesional_id", user.id);
-
-      error = response.error;
-    } else {
-      const response = await supabase.from("sesiones_clinicas").insert([payload]);
-      error = response.error;
+    try {
+      await guardarSesionClinica({ cita_id: cita.id, ...payload });
+    } catch (error) {
+      setGuardando(false);
+      setMensajeOperacion({ tipo: "error", texto: error.message || "No fue posible guardar la sesión clínica." });
+      return;
     }
 
     setGuardando(false);
 
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
     descartarAudio();
 
-    alert(
-      storageProvider === "google_drive"
+    setMensajeOperacion({
+      tipo: "success",
+      volver: estado === "finalizada",
+      texto: storageProvider === "google_drive"
         ? "Sesión guardada en Google Drive. Mentalia solo guardó metadatos."
         : estado === "finalizada"
         ? "Sesión finalizada correctamente."
-        : "Borrador guardado."
-    );
-
-    if (estado === "finalizada") goBack();
+        : "Borrador guardado.",
+    });
   }
 
   return (
-    <main className="min-h-screen bg-[#eef8fb] p-6">
+    <>
+      <main className="min-h-screen bg-[#eef8fb] p-6">
       <div className="mx-auto max-w-5xl">
         <button onClick={goBack} className="mb-4 font-bold text-cyan-700">
           ← Volver
@@ -482,6 +464,31 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
           </div>
         </div>
       </div>
-    </main>
+      </main>
+
+      {mensajeOperacion && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="text-center">
+              <div className="text-5xl">{mensajeOperacion.tipo === "success" ? "✅" : "⚠️"}</div>
+              <h2 className="mt-3 text-xl font-black text-slate-800">
+                {mensajeOperacion.tipo === "success" ? "Operación realizada" : "No se pudo completar la operación"}
+              </h2>
+              <p className="mt-3 text-sm text-slate-600">{mensajeOperacion.texto}</p>
+            </div>
+            <button
+              onClick={() => {
+                const volver = mensajeOperacion.volver;
+                setMensajeOperacion(null);
+                if (volver) goBack();
+              }}
+              className="mt-6 w-full rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white"
+            >
+              {mensajeOperacion.volver ? "Volver a la agenda" : "Entendido"}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

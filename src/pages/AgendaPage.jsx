@@ -6,6 +6,15 @@ import {
   obtenerEventosDeLaSemana,
   actualizarEventoGoogleCalendar,
 } from "../lib/googleCalendarClient";
+import {
+  cancelarCita as cancelarCitaApi,
+  obtenerCitas,
+  obtenerDisponibilidad,
+  obtenerAgendaOperativa,
+  obtenerPacientes,
+  reprogramarCita,
+  vincularEventoPaciente,
+} from "../lib/mentaliaApi";
 
 const dias = [
   { id: 1, nombre: "Lunes" },
@@ -38,13 +47,6 @@ function sumarDias(fecha, cantidadDias) {
   const nueva = new Date(fecha);
   nueva.setDate(nueva.getDate() + cantidadDias);
   return nueva;
-}
-
-function calcularHoraFin(hora, minutos = 60) {
-  const [h, m] = hora.split(":").map(Number);
-  const date = new Date();
-  date.setHours(h, m + Number(minutos), 0, 0);
-  return date.toTimeString().slice(0, 5);
 }
 
 function extraerFechaDesdeISO(fechaISO) {
@@ -93,6 +95,13 @@ export default function AgendaPage({
   const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
   const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
+  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(() => {
+    try {
+      return localStorage.getItem("mentalia_google_calendar_activo") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [eventoGoogleSeleccionado, setEventoGoogleSeleccionado] =
     useState(null);
 
@@ -117,46 +126,11 @@ export default function AgendaPage({
     setCargando(true);
 
     try {
-      const { data, error } = await supabase
-        .from("citas")
-        .select(`
-          *,
-          pacientes (
-            id,
-            nombres,
-            apellidos,
-            identificador,
-            email,
-            telefono
-          )
-        `)
-        .eq("profesional_id", user.id)
-        .order("fecha", { ascending: true })
-        .order("hora_inicio", { ascending: true });
-
-      if (error) {
-        console.error("AgendaPage - error cargando citas:", error);
-        alert("Error cargando citas: " + error.message);
-        return;
-      }
-
-      const { data: disponibilidadData, error: disponibilidadError } =
-        await supabase
-          .from("disponibilidad_profesional")
-          .select("*")
-          .eq("profesional_id", user.id)
-          .eq("activo", true);
-
-      if (disponibilidadError) {
-        console.error(
-          "AgendaPage - error cargando disponibilidad:",
-          disponibilidadError
-        );
-        alert("Error cargando disponibilidad: " + disponibilidadError.message);
-        return;
-      }
-
-      setCitas(data || []);
+      const [citasData, disponibilidadData] = await Promise.all([
+        obtenerCitas(),
+        obtenerDisponibilidad(),
+      ]);
+      setCitas(citasData || []);
       setDisponibilidad(disponibilidadData || []);
     } catch (error) {
       console.error("AgendaPage - error inesperado:", error);
@@ -177,21 +151,7 @@ export default function AgendaPage({
     setCargandoPacientes(true);
 
     try {
-      const { data, error } = await supabase
-        .from("pacientes")
-        .select(
-          "id, nombres, apellidos, identificador, email, telefono, profesional_id"
-        )
-        .eq("profesional_id", user.id)
-        .order("apellidos", { ascending: true, nullsFirst: false })
-        .order("nombres", { ascending: true, nullsFirst: false });
-
-      if (error) {
-        console.error("Error cargando pacientes:", error);
-        alert("No se pudieron cargar los pacientes: " + error.message);
-        setPacientes([]);
-        return;
-      }
+      const data = await obtenerPacientes();
 
       const pacientesOrdenados = (data || []).sort((a, b) => {
         const nombreA = `${a.apellidos || ""} ${a.nombres || ""}`
@@ -270,26 +230,7 @@ export default function AgendaPage({
     if (!user?.id) return;
 
     try {
-      const { data, error } = await supabase
-        .from("agenda_operativa")
-        .select(`
-          *,
-          pacientes (
-            id,
-            nombres,
-            apellidos,
-            identificador,
-            email,
-            telefono
-          )
-        `)
-        .eq("profesional_id", user.id)
-        .order("google_calendar_inicio", { ascending: true });
-
-      if (error) {
-        console.error("Error cargando agenda operativa:", error);
-        return;
-      }
+      const data = await obtenerAgendaOperativa();
 
       setAtencionesGoogleVinculadas(
         (data || []).map((row) => normalizarAtencionOperativa(row))
@@ -308,10 +249,25 @@ export default function AgendaPage({
   }, [user?.id, refreshKey]);
 
   useEffect(() => {
-    if (user?.id) {
+    if (user?.id && googleCalendarActivo) {
       cargarAgendaDesdeGoogleCalendar(semanaBase);
     }
-  }, [user?.id, semanaBase]);
+  }, [user?.id, semanaBase, googleCalendarActivo]);
+
+  function cambiarEstadoGoogleCalendar(activo) {
+    setGoogleCalendarActivo(activo);
+    try {
+      localStorage.setItem("mentalia_google_calendar_activo", String(activo));
+    } catch {
+      // La preferencia visual no debe impedir el uso de la agenda interna.
+    }
+
+    if (!activo) {
+      setEventosGoogleCalendar([]);
+      setErrorGoogleCalendar("");
+      setCargandoGoogleCalendar(false);
+    }
+  }
 
   const hoy = fechaTexto(new Date());
 
@@ -399,7 +355,7 @@ export default function AgendaPage({
     setErrorGoogleCalendar("");
 
     try {
-      const accessToken = await obtenerAccessTokenGoogleCalendar();
+      const accessToken = await obtenerAccessTokenGoogleCalendar({ loginHint: user?.email });
 
       const eventos = await obtenerEventosDeLaSemana({
         accessToken,
@@ -407,7 +363,9 @@ export default function AgendaPage({
       });
 
       setEventosGoogleCalendar(eventos);
-      await cargarAtencionesOperativas();
+      // Las vinculaciones operativas son una capa secundaria y no deben bloquear
+      // la visualización de los eventos que ya llegaron desde Google Calendar.
+      void cargarAtencionesOperativas();
 
       console.log("Eventos Google Calendar semana:", eventos);
     } catch (error) {
@@ -502,26 +460,18 @@ export default function AgendaPage({
     console.log("Intentando guardar agenda_operativa:", registroAgendaOperativa);
 
     try {
-      const { data, error } = await supabase
-        .from("agenda_operativa")
-        .upsert(registroAgendaOperativa, {
-          onConflict: "profesional_id,google_calendar_event_id",
-        })
-        .select("*")
-        .single();
-
-      console.log("Respuesta Supabase agenda_operativa:", { data, error });
-
-      if (error) {
-        console.error("Error guardando agenda_operativa:", error);
-        alert("No se pudo guardar la vinculación en Mentalia: " + error.message);
-        return;
-      }
+      const data = await vincularEventoPaciente({
+        paciente_id: paciente.id,
+        google_calendar_event_id: registroAgendaOperativa.google_calendar_event_id,
+        google_calendar_summary: registroAgendaOperativa.google_calendar_summary,
+        google_calendar_inicio: registroAgendaOperativa.google_calendar_inicio,
+        google_calendar_fin: registroAgendaOperativa.google_calendar_fin,
+      });
 
       let eventoGoogleActualizado = true;
 
       try {
-        const accessToken = await obtenerAccessTokenGoogleCalendar();
+        const accessToken = await obtenerAccessTokenGoogleCalendar({ loginHint: user?.email });
 
         await actualizarEventoGoogleCalendar({
           accessToken,
@@ -640,63 +590,16 @@ export default function AgendaPage({
     const confirma = window.confirm("¿Estás seguro de cancelar esta cita?");
     if (!confirma) return;
 
-    const { error } = await supabase
-      .from("citas")
-      .update({ estado: "cancelada" })
-      .eq("id", cita.id)
-      .eq("profesional_id", user.id);
-
-    if (error) {
-      alert(error.message);
+    try {
+      const actualizada = await cancelarCitaApi(cita.id);
+      setCitas((prev) =>
+        prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item)
+      );
+    } catch (error) {
+      if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
+      else alert(error.message || "No fue posible cancelar la cita.");
       return;
     }
-
-    setCitas((prev) =>
-      prev.map((item) =>
-        item.id === cita.id ? { ...item, estado: "cancelada" } : item
-      )
-    );
-  }
-
-  function horarioExisteEnDisponibilidad(fecha, hora) {
-    const fechaObj = new Date(`${fecha}T00:00:00`);
-    const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
-    const horaFinNueva = calcularHoraFin(hora, 60);
-
-    return disponibilidad.some((item) => {
-      const inicio = item.hora_inicio?.slice(0, 5);
-      const fin = item.hora_fin?.slice(0, 5);
-
-      if (!inicio || !fin) return false;
-
-      const mismoDia = Number(item.dia_semana) === Number(diaJS);
-      const dentroHora = hora >= inicio && horaFinNueva <= fin;
-
-      const fechaInicio = item.fecha_inicio?.slice(0, 10);
-      const fechaFin = item.fecha_fin?.slice(0, 10);
-
-      const dentroRangoFecha =
-        (!fechaInicio || fecha >= fechaInicio) &&
-        (!fechaFin || fecha <= fechaFin);
-
-      return mismoDia && dentroHora && dentroRangoFecha;
-    });
-  }
-
-  function existeCitaEnHorario(fecha, hora, citaActualId) {
-    return citas.some(
-      (cita) =>
-        cita.id !== citaActualId &&
-        cita.fecha?.slice(0, 10) === fecha &&
-        cita.hora_inicio?.slice(0, 5) === hora &&
-        cita.estado !== "cancelada"
-    );
-  }
-
-  function esFechaHoraPasada(fecha, hora) {
-    const ahora = new Date();
-    const fechaHora = new Date(`${fecha}T${hora}:00`);
-    return fechaHora < ahora;
   }
 
   async function guardarReagenda() {
@@ -705,54 +608,24 @@ export default function AgendaPage({
       return;
     }
 
-    if (esFechaHoraPasada(nuevaFecha, nuevaHora)) {
-      alert("No puedes reagendar una cita a una fecha u hora pasada.");
-      return;
-    }
-
-    if (existeCitaEnHorario(nuevaFecha, nuevaHora, citaEditando.id)) {
-      alert("Ese horario ya está reservado. Selecciona otro horario.");
-      return;
-    }
-
-    if (!horarioExisteEnDisponibilidad(nuevaFecha, nuevaHora)) {
-      alert(
-        "El horario seleccionado no está dentro de la disponibilidad configurada."
-      );
-      return;
-    }
-
-    const horaFin = calcularHoraFin(nuevaHora, 60);
-
-    const { error } = await supabase
-      .from("citas")
-      .update({
+    try {
+      const actualizada = await reprogramarCita({
+        citaId: citaEditando.id,
         fecha: nuevaFecha,
-        hora_inicio: nuevaHora,
-        hora_fin: horaFin,
-        estado: "reprogramada",
-      })
-      .eq("id", citaEditando.id)
-      .eq("profesional_id", user.id);
+        horaInicio: nuevaHora,
+      });
 
-    if (error) {
-      alert(error.message);
+      setCitas((prev) =>
+        prev.map((item) => item.id === citaEditando.id ? { ...item, ...actualizada } : item)
+      );
+    } catch (error) {
+      if (error.code === "SLOT_ALREADY_BOOKED") alert("Ese horario ya está reservado. Selecciona otro horario.");
+      else if (error.code === "OUTSIDE_AVAILABILITY") alert("El horario seleccionado no está dentro de la disponibilidad configurada.");
+      else if (error.code === "PAST_APPOINTMENT") alert("No puedes reagendar una cita a una fecha u hora pasada.");
+      else if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
+      else alert(error.message || "No fue posible reprogramar la cita.");
       return;
     }
-
-    setCitas((prev) =>
-      prev.map((item) =>
-        item.id === citaEditando.id
-          ? {
-              ...item,
-              fecha: nuevaFecha,
-              hora_inicio: nuevaHora,
-              hora_fin: horaFin,
-              estado: "reprogramada",
-            }
-          : item
-      )
-    );
 
     setCitaEditando(null);
     setNuevaFecha("");
@@ -927,15 +800,17 @@ export default function AgendaPage({
           </div>
 
           <div className="flex flex-col gap-2 md:flex-row">
-            <button
-              onClick={() => cargarAgendaDesdeGoogleCalendar(semanaBase)}
-              disabled={cargandoGoogleCalendar}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {cargandoGoogleCalendar
-                ? "Cargando Google Calendar..."
-                : "Actualizar Google Calendar"}
-            </button>
+            {googleCalendarActivo && (
+              <button
+                onClick={() => cargarAgendaDesdeGoogleCalendar(semanaBase)}
+                disabled={cargandoGoogleCalendar}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {cargandoGoogleCalendar
+                  ? "Cargando Google Calendar..."
+                  : "Actualizar Google Calendar"}
+              </button>
+            )}
 
             <button
               onClick={cargarCitas}
@@ -957,19 +832,39 @@ export default function AgendaPage({
           <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-lg font-black text-blue-900">
-                Google Calendar conectado
+                Integración con Google Calendar
               </h2>
 
               <p className="text-sm text-blue-700">
-                La agenda se carga automáticamente desde Google Calendar para la semana seleccionada.
+                Las citas de Mentalia siempre están disponibles. Google Calendar es opcional.
               </p>
             </div>
 
-            <p className="text-xs font-bold text-blue-700">
-              {cargandoGoogleCalendar
-                ? "Sincronizando..."
-                : `${eventosGoogleCalendar.length} evento(s) en la semana`}
-            </p>
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-bold text-blue-700">
+                {googleCalendarActivo
+                  ? cargandoGoogleCalendar
+                    ? "Sincronizando..."
+                    : `${eventosGoogleCalendar.length} evento(s) en la semana`
+                  : "Desactivado"}
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={googleCalendarActivo}
+                onClick={() => cambiarEstadoGoogleCalendar(!googleCalendarActivo)}
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition ${
+                  googleCalendarActivo ? "bg-blue-600" : "bg-slate-300"
+                }`}
+                title={googleCalendarActivo ? "Desactivar Google Calendar" : "Activar Google Calendar"}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                    googleCalendarActivo ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         </section>
 
@@ -999,11 +894,11 @@ export default function AgendaPage({
               Hoy - {formatearFecha(hoy)}
             </h2>
 
-            {cargandoGoogleCalendar || cargando ? (
+            {(googleCalendarActivo && cargandoGoogleCalendar) || cargando ? (
               <p className="text-center text-slate-500">Cargando agenda...</p>
             ) : eventosGoogleHoy.length === 0 && citasHoy.length === 0 ? (
               <p className="text-center text-slate-500">
-                No hay eventos para hoy en Google Calendar ni citas internas en Mentalia.
+                No hay citas internas en Mentalia{googleCalendarActivo ? " ni eventos de Google Calendar" : ""}.
               </p>
             ) : (
               <div className="space-y-6">
@@ -1054,7 +949,7 @@ export default function AgendaPage({
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-500">
-                  Fuente primaria: Google Calendar. Mentalia muestra la capa operativa y las vinculaciones de paciente.
+                  Fuente primaria: Mentalia. Google Calendar es una integración opcional para consultar eventos externos.
                 </p>
               </div>
 
@@ -1066,9 +961,9 @@ export default function AgendaPage({
               </button>
             </div>
 
-            {cargandoGoogleCalendar || cargando ? (
+            {(googleCalendarActivo && cargandoGoogleCalendar) || cargando ? (
               <p className="rounded-2xl bg-slate-50 p-6 text-center text-slate-500">
-                Cargando agenda semanal desde Google Calendar...
+                Cargando agenda semanal desde Mentalia{googleCalendarActivo ? " y Google Calendar" : ""}...
               </p>
             ) : (
               <div className="grid gap-4 md:grid-cols-7">

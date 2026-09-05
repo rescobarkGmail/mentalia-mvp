@@ -1,10 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { formatearFecha } from "../utils/formato";
 import {
   obtenerAccessTokenGoogleCalendar,
   obtenerEventosDeLaSemana,
 } from "../lib/googleCalendarClient";
+import {
+  obtenerCitas,
+  obtenerDisponibilidad,
+  crearDisponibilidad,
+  actualizarDisponibilidad,
+  eliminarDisponibilidad,
+} from "../lib/mentaliaApi";
 
 const dias = [
   { id: 1, nombre: "Lunes", corto: "Lun" },
@@ -16,14 +22,7 @@ const dias = [
   { id: 7, nombre: "Domingo", corto: "Dom" },
 ];
 
-const TABLA_DISPONIBILIDAD = "disponibilidad_profesional";
-const TABLA_RESERVAS_LEGACY = "citas";
-const ORIGEN_DISPONIBILIDAD = "google_calendar";
-
-function esErrorColumnaOrigen(error) {
-  const texto = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`.toLowerCase();
-  return texto.includes("origen") && texto.includes("does not exist");
-}
+const ORIGEN_DISPONIBILIDAD = "mentalia";
 
 function fechaTexto(fecha) {
   const year = fecha.getFullYear();
@@ -48,7 +47,7 @@ function sumarDias(fecha, cantidadDias) {
   return nueva;
 }
 
-function generarSlots(horaInicio, horaFin, duracion) {
+function generarSlots(horaInicio, horaFin, duracion, descanso = 0) {
   const slots = [];
   const [hi, mi] = horaInicio.slice(0, 5).split(":").map(Number);
   const [hf, mf] = horaFin.slice(0, 5).split(":").map(Number);
@@ -69,7 +68,7 @@ function generarSlots(horaInicio, horaFin, duracion) {
       });
     }
 
-    actual = siguiente;
+    actual = new Date(siguiente.getTime() + Number(descanso || 0) * 60000);
   }
 
   return slots;
@@ -106,6 +105,8 @@ export default function DisponibilidadPage({ user, goBack }) {
   const [horaInicio, setHoraInicio] = useState("");
   const [horaFin, setHoraFin] = useState("");
   const [duracion, setDuracion] = useState("60");
+  const [duracionPersonalizada, setDuracionPersonalizada] = useState("");
+  const [descanso, setDescanso] = useState("0");
   const [fechaInicio, setFechaInicio] = useState(hoy);
   const [fechaFin, setFechaFin] = useState("");
   const [guardando, setGuardando] = useState(false);
@@ -114,6 +115,9 @@ export default function DisponibilidadPage({ user, goBack }) {
   const [cargandoDatos, setCargandoDatos] = useState(false);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
   const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
+  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(() => {
+    try { return localStorage.getItem("mentalia_google_calendar_activo") === "true"; } catch { return false; }
+  });
 
   const [modal, setModal] = useState({
     visible: false,
@@ -127,6 +131,10 @@ export default function DisponibilidadPage({ user, goBack }) {
   );
 
   const finSemana = sumarDias(semanaBase, 6);
+  // Jornada completa. La vista se posiciona inicialmente en las 08:00 y
+  // permite desplazarse hacia la madrugada o la noche.
+  const horasJornada = Array.from({ length: 24 }, (_, index) => index);
+  const timelineRef = useRef(null);
 
   function mostrarModal(title, message) {
     setModal({ visible: true, title, message });
@@ -138,44 +146,15 @@ export default function DisponibilidadPage({ user, goBack }) {
     setCargandoDatos(true);
 
     try {
-      const { data: disponibilidad, error: disponibilidadError } = await supabase
-        .from(TABLA_DISPONIBILIDAD)
-        .select("*")
-        .eq("profesional_id", user.id)
-        .eq("origen", ORIGEN_DISPONIBILIDAD)
-        .order("dia_semana", { ascending: true })
-        .order("hora_inicio", { ascending: true })
-        .order("fecha_crea", { ascending: false });
-
-      if (disponibilidadError) {
-        if (esErrorColumnaOrigen(disponibilidadError)) {
-          mostrarModal(
-            "Falta migración de base de datos",
-            "La tabla disponibilidad_profesional todavía no tiene el campo origen. Ejecuta primero el script SQL de migración y luego vuelve a cargar esta página."
-          );
-          return;
-        }
-
-        mostrarModal("Error", disponibilidadError.message);
-        return;
-      }
-
-      const { data: citasData, error: citasError } = await supabase
-        .from(TABLA_RESERVAS_LEGACY)
-        .select("*")
-        .eq("profesional_id", user.id)
-        .order("fecha", { ascending: true })
-        .order("hora_inicio", { ascending: true });
-
-      if (citasError) {
-        mostrarModal("Error", citasError.message);
-        return;
-      }
+      const [disponibilidad, citasData] = await Promise.all([
+        obtenerDisponibilidad(),
+        obtenerCitas(),
+      ]);
 
       setItems(disponibilidad || []);
       setCitas(citasData || []);
     } catch (error) {
-      mostrarModal("Error", error.message || "No se pudieron cargar los datos.");
+      mostrarModal("Error", error.message || "No se pudieron cargar los datos desde la API.");
     } finally {
       setCargandoDatos(false);
     }
@@ -186,7 +165,7 @@ export default function DisponibilidadPage({ user, goBack }) {
     setErrorGoogleCalendar("");
 
     try {
-      const accessToken = await obtenerAccessTokenGoogleCalendar();
+      const accessToken = await obtenerAccessTokenGoogleCalendar({ loginHint: user?.email });
       const eventos = await obtenerEventosDeLaSemana({
         accessToken,
         fechaReferencia,
@@ -210,14 +189,35 @@ export default function DisponibilidadPage({ user, goBack }) {
   }, [user?.id]);
 
   useEffect(() => {
-    if (user?.id) cargarEventosGoogleCalendar(semanaBase);
-  }, [user?.id, semanaBase]);
+    if (user?.id && googleCalendarActivo) cargarEventosGoogleCalendar(semanaBase);
+  }, [user?.id, semanaBase, googleCalendarActivo]);
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const firstVisibleRow = timeline.querySelector('[data-hour="8"]');
+    if (firstVisibleRow) {
+      timeline.scrollTop = Math.max(0, firstVisibleRow.offsetTop - 58);
+    }
+  }, [semanaBase, items.length, citas.length]);
+
+  function cambiarEstadoGoogleCalendar(activo) {
+    setGoogleCalendarActivo(activo);
+    try { localStorage.setItem("mentalia_google_calendar_activo", String(activo)); } catch { /* preferencia local */ }
+    if (!activo) {
+      setEventosGoogleCalendar([]);
+      setErrorGoogleCalendar("");
+      setCargandoGoogleCalendar(false);
+    }
+  }
 
   function resetFormulario() {
     setDiasSeleccionados([]);
     setHoraInicio("");
     setHoraFin("");
     setDuracion("60");
+    setDuracionPersonalizada("");
+    setDescanso("0");
     setFechaInicio(hoy);
     setFechaFin("");
     setEditandoId(null);
@@ -237,7 +237,7 @@ export default function DisponibilidadPage({ user, goBack }) {
   }
 
   function estaReservadoEnCitas(fecha, horaInicioSlot) {
-    return citas.some((cita) => {
+    return citas.find((cita) => {
       const fechaCita = cita.fecha?.slice(0, 10);
       const horaCita = cita.hora_inicio?.slice(0, 5);
 
@@ -292,7 +292,7 @@ export default function DisponibilidadPage({ user, goBack }) {
 
       return (
         activo &&
-        origen === ORIGEN_DISPONIBILIDAD &&
+      (origen === ORIGEN_DISPONIBILIDAD || origen === "google_calendar") &&
         Number(item.dia_semana) === Number(diaJS) &&
         item.fecha_inicio <= fecha &&
         item.fecha_fin >= fecha
@@ -302,9 +302,9 @@ export default function DisponibilidadPage({ user, goBack }) {
     const slots = [];
 
     reglas.forEach((regla) => {
-      generarSlots(regla.hora_inicio, regla.hora_fin, regla.duracion_minutos).forEach((slot) => {
+      generarSlots(regla.hora_inicio, regla.hora_fin, regla.duracion_minutos, regla.descanso_minutos).forEach((slot) => {
         const eventoGoogle = eventoGoogleQueBloquea(fecha, slot.hora_inicio, slot.hora_fin);
-        const reservadoInterno = estaReservadoEnCitas(fecha, slot.hora_inicio);
+        const citaInterna = estaReservadoEnCitas(fecha, slot.hora_inicio);
 
         slots.push({
           fecha,
@@ -312,8 +312,9 @@ export default function DisponibilidadPage({ user, goBack }) {
           hora_fin: slot.hora_fin,
           regla_id: regla.id,
           duracion_minutos: regla.duracion_minutos,
-          estado: eventoGoogle || reservadoInterno ? "ocupado" : "disponible",
-          motivo_ocupado: eventoGoogle ? "google_calendar" : reservadoInterno ? "mentalia" : null,
+          estado: eventoGoogle || citaInterna ? "ocupado" : "disponible",
+          motivo_ocupado: eventoGoogle ? "google_calendar" : citaInterna ? "mentalia" : null,
+          citaInterna,
           eventoGoogle,
         });
       });
@@ -328,6 +329,10 @@ export default function DisponibilidadPage({ user, goBack }) {
       const horaCita = cita.hora_inicio?.slice(0, 5);
 
       if (!fechaCita || !horaCita) return false;
+
+      // Las reservas históricas no deben impedir modificar una programación.
+      // Solo se protegen reservas de hoy en adelante.
+      if (fechaCita < hoy) return false;
 
       const fechaObj = new Date(`${fechaCita}T00:00:00`);
       const diaJS = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
@@ -356,7 +361,14 @@ export default function DisponibilidadPage({ user, goBack }) {
     setDiasSeleccionados([Number(item.dia_semana)]);
     setHoraInicio(item.hora_inicio.slice(0, 5));
     setHoraFin(item.hora_fin.slice(0, 5));
-    setDuracion(String(item.duracion_minutos));
+    const duracionGuardada = String(item.duracion_minutos);
+    setDuracion(["30", "45", "60", "90"].includes(duracionGuardada) ? duracionGuardada : "personalizado");
+    setDuracionPersonalizada(
+      ["30", "45", "60", "90"].includes(duracionGuardada)
+        ? ""
+        : duracionGuardada
+    );
+    setDescanso(String(item.descanso_minutos ?? 0));
     setFechaInicio(item.fecha_inicio);
     setFechaFin(item.fecha_fin);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -364,6 +376,8 @@ export default function DisponibilidadPage({ user, goBack }) {
 
   async function guardar() {
     if (guardando) return;
+
+    const duracionEfectiva = Number(duracion === "personalizado" ? duracionPersonalizada : duracion);
 
     if (
       diasSeleccionados.length === 0 ||
@@ -374,6 +388,11 @@ export default function DisponibilidadPage({ user, goBack }) {
       !duracion
     ) {
       mostrarModal("Campos incompletos", "Selecciona al menos un día y completa todos los campos de disponibilidad.");
+      return;
+    }
+
+    if (!Number.isInteger(duracionEfectiva) || duracionEfectiva < 15 || duracionEfectiva > 240) {
+      mostrarModal("Duración inválida", "Ingresa un valor entero entre 15 y 240 minutos.");
       return;
     }
 
@@ -396,28 +415,23 @@ export default function DisponibilidadPage({ user, goBack }) {
           dia_semana: Number(diasSeleccionados[0]),
           hora_inicio: horaInicio,
           hora_fin: horaFin,
-          duracion_minutos: Number(duracion),
+          duracion_minutos: duracionEfectiva,
+          descanso_minutos: Number(descanso),
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
           activo: true,
           origen: ORIGEN_DISPONIBILIDAD,
         };
 
-        const { error } = await supabase
-          .from(TABLA_DISPONIBILIDAD)
-          .update(payload)
-          .eq("id", editandoId)
-          .eq("profesional_id", user.id)
-          .eq("origen", ORIGEN_DISPONIBILIDAD);
-
-        if (error) throw error;
+        await actualizarDisponibilidad(editandoId, payload);
       } else {
         const payloads = diasSeleccionados.map((diaId) => ({
           profesional_id: user.id,
           dia_semana: Number(diaId),
           hora_inicio: horaInicio,
           hora_fin: horaFin,
-          duracion_minutos: Number(duracion),
+          duracion_minutos: duracionEfectiva,
+          descanso_minutos: Number(descanso),
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
           activo: true,
@@ -425,13 +439,10 @@ export default function DisponibilidadPage({ user, goBack }) {
           fecha_crea: new Date().toISOString(),
         }));
 
-        console.log("Guardando reglas de disponibilidad Google Calendar en Supabase:", {
-          tabla: TABLA_DISPONIBILIDAD,
-          payloads,
+        await crearDisponibilidad({
+          ...payloads[0],
+          dias_semana: diasSeleccionados.map((diaId) => Number(diaId)),
         });
-
-        const { error } = await supabase.from(TABLA_DISPONIBILIDAD).insert(payloads);
-        if (error) throw error;
       }
 
       await cargar();
@@ -444,14 +455,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           : `Disponibilidad guardada para: ${nombreDiasSeleccionados(diasSeleccionados)}.`
       );
     } catch (error) {
-      if (esErrorColumnaOrigen(error)) {
-        mostrarModal(
-          "Falta migración de base de datos",
-          "No se pudo guardar porque la tabla disponibilidad_profesional no tiene el campo origen. Ejecuta primero el script SQL de migración."
-        );
-      } else {
-        mostrarModal("Error", error.message || "No se pudo guardar la disponibilidad.");
-      }
+      mostrarModal("Error", error.message || "No se pudo guardar la disponibilidad.");
     } finally {
       setGuardando(false);
     }
@@ -469,15 +473,10 @@ export default function DisponibilidadPage({ user, goBack }) {
     const confirma = window.confirm("¿Estás seguro de eliminar esta disponibilidad?");
     if (!confirma) return;
 
-    const { error } = await supabase
-      .from(TABLA_DISPONIBILIDAD)
-      .delete()
-      .eq("id", item.id)
-      .eq("profesional_id", user.id)
-      .eq("origen", ORIGEN_DISPONIBILIDAD);
-
-    if (error) {
-      mostrarModal("Error", error.message);
+    try {
+      await eliminarDisponibilidad(item.id);
+    } catch (error) {
+      mostrarModal("Error", error.message || "No se pudo eliminar la disponibilidad.");
       return;
     }
 
@@ -492,33 +491,29 @@ export default function DisponibilidadPage({ user, goBack }) {
   function renderSlot(slot) {
     const ocupado = slot.estado === "ocupado";
     const ocupadoGoogle = slot.motivo_ocupado === "google_calendar";
+    const paciente = slot.citaInterna?.pacientes || slot.citaInterna?.paciente;
+    const nombrePaciente = paciente
+      ? `${paciente.nombres || ""} ${paciente.apellidos || ""}`.trim()
+      : "Reservado";
 
     return (
       <div
         key={`${slot.fecha}-${slot.hora_inicio}-${slot.regla_id}`}
-        title={ocupadoGoogle ? slot.eventoGoogle?.titulo : "Disponible para reserva"}
-        className={`rounded-xl px-3 py-2 text-sm font-bold leading-tight ${
+        title={ocupadoGoogle ? slot.eventoGoogle?.titulo : ocupado ? nombrePaciente : "Disponible para reserva"}
+        className={`rounded-lg border px-2 py-1.5 text-xs font-bold leading-tight ${
           ocupado
             ? ocupadoGoogle
-              ? "border border-slate-200 bg-slate-100 text-slate-500"
-              : "border border-slate-900 bg-slate-700 text-white"
-            : "border border-emerald-100 bg-emerald-50 text-emerald-700"
+              ? "border-blue-200 bg-blue-50 text-blue-700"
+              : "border-red-200 bg-red-50 text-red-700"
+            : "border-emerald-200 bg-emerald-50 text-emerald-700"
         }`}
       >
-        <div className="flex items-center justify-between gap-2">
-          <span>
-            {slot.hora_inicio} - {slot.hora_fin}
-          </span>
-          <span className="text-[10px]">{ocupado ? "Ocupado" : "Libre"}</span>
-        </div>
-
-        <p className="mt-1 line-clamp-1 text-[11px] font-semibold">
-          {ocupadoGoogle
-            ? slot.eventoGoogle?.titulo || "Evento Google Calendar"
-            : slot.motivo_ocupado === "mentalia"
-            ? "Reserva Mentalia"
-            : "Disponible para paciente"}
-        </p>
+        <span>{slot.hora_inicio} - {slot.hora_fin}</span>
+        {ocupado && (
+          <p className="mt-0.5 line-clamp-1 text-[10px] font-semibold">
+            {ocupadoGoogle ? slot.eventoGoogle?.titulo || "Google Calendar" : nombrePaciente}
+          </p>
+        )}
       </div>
     );
   }
@@ -595,6 +590,61 @@ export default function DisponibilidadPage({ user, goBack }) {
     );
   }
 
+  function renderHorarioCronologico() {
+    const slotsPorDia = diasSemana.map((fechaObj) => slotsDelDia(fechaObj));
+
+    return (
+      <section className="mb-8 rounded-2xl border border-cyan-100 bg-white p-4 shadow-sm">
+        <h3 className="mb-4 rounded-2xl bg-cyan-100 py-3 text-center text-xl font-black text-cyan-800">
+          HORARIOS DE LA SEMANA
+        </h3>
+
+        <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl">
+          <div className="min-w-[1050px]">
+          <div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px rounded-t-2xl bg-slate-200 p-px">
+            <div className="bg-white p-2" />
+            {diasSemana.map((fechaObj) => {
+              const fecha = fechaTexto(fechaObj);
+              const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+              return (
+                <div key={`header-${fecha}`} className="bg-white p-2 text-center">
+                  <p className="font-black text-cyan-700">{obtenerNombreDia(dia)}</p>
+                  <p className="text-xs text-slate-500">{formatearFecha(fecha)}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          {horasJornada.map((hora) => (
+            (() => {
+              const haySlotsEnLaHora = slotsPorDia.some((slots) =>
+                slots.some((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora)
+              );
+              return (
+            <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px">
+              <div className={`${haySlotsEnLaHora ? "min-h-0" : "min-h-[28px]"} bg-slate-50 p-1 text-center text-sm font-black text-slate-500`}>
+                {String(hora).padStart(2, "0")}:00
+              </div>
+              {slotsPorDia.map((slots, dayIndex) => {
+                const slotsDeLaHora = slots.filter((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora);
+                return (
+                  <div key={`${hora}-${dayIndex}`} className={`${haySlotsEnLaHora ? "min-h-0" : "min-h-[28px]"} bg-white p-1`}>
+                    <div className="space-y-1">
+                      {slotsDeLaHora.map((slot) => renderSlot(slot))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+              );
+            })()
+          ))}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#eef8fb] px-4 py-6 lg:px-8">
       <div className="mx-auto w-full max-w-[1600px] px-2">
@@ -604,18 +654,20 @@ export default function DisponibilidadPage({ user, goBack }) {
           <div>
             <h1 className="text-3xl font-black text-slate-900">Disponibilidad para reservas</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Define ventanas de atención con origen google_calendar. Google Calendar se lee para bloquear horas ocupadas; Mentalia guarda la regla operativa en Supabase.
+              Define ventanas de atención en Mentalia. Google Calendar es opcional y solo bloquea eventos externos si lo activas.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => cargarEventosGoogleCalendar(semanaBase)}
-            disabled={cargandoGoogleCalendar}
-            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-60"
-          >
-            {cargandoGoogleCalendar ? "Leyendo Google Calendar..." : "Actualizar Google Calendar"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" role="switch" aria-checked={googleCalendarActivo} onClick={() => cambiarEstadoGoogleCalendar(!googleCalendarActivo)} className={`rounded-xl px-4 py-2 text-sm font-black ${googleCalendarActivo ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-600"}`}>
+              Google Calendar: {googleCalendarActivo ? "Activado" : "Desactivado"}
+            </button>
+            {googleCalendarActivo && (
+              <button type="button" onClick={() => cargarEventosGoogleCalendar(semanaBase)} disabled={cargandoGoogleCalendar} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-60">
+                {cargandoGoogleCalendar ? "Leyendo Google Calendar..." : "Actualizar Google Calendar"}
+              </button>
+            )}
+          </div>
         </div>
 
         {errorGoogleCalendar && (
@@ -628,12 +680,12 @@ export default function DisponibilidadPage({ user, goBack }) {
           <h2 className="mb-3 text-lg font-black text-slate-900">Modelo operativo de disponibilidad</h2>
           <div className="grid gap-3 text-sm leading-6 text-slate-600 md:grid-cols-3">
             <div className="rounded-2xl bg-emerald-50 p-4">
-              <p className="font-black text-emerald-700">1. Reglas Google Calendar</p>
-              <p>Esta pantalla solo lee y guarda reglas con origen google_calendar, para no mezclar disponibilidad histórica creada manualmente en Mentalia.</p>
+              <p className="font-black text-emerald-700">1. Reglas de Mentalia</p>
+              <p>Las reglas se guardan mediante la API y quedan asociadas al profesional autenticado.</p>
             </div>
             <div className="rounded-2xl bg-blue-50 p-4">
-              <p className="font-black text-blue-700">2. Ocupación real</p>
-              <p>Los eventos de Google Calendar bloquean horarios dentro de las ventanas configuradas.</p>
+              <p className="font-black text-blue-700">2. Ocupación externa opcional</p>
+              <p>Si activas Google Calendar, sus eventos bloquean horarios dentro de las ventanas configuradas.</p>
             </div>
             <div className="rounded-2xl bg-slate-50 p-4">
               <p className="font-black text-slate-700">3. Horas para paciente</p>
@@ -648,7 +700,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           </h2>
 
           <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
-            Puedes seleccionar uno o varios días para aplicar el mismo horario. Por ejemplo: lunes y jueves de 13:00 a 18:00, o lunes a viernes de 09:00 a 18:00. Al guardar, Mentalia crea una regla por cada día seleccionado con origen google_calendar.
+            Puedes seleccionar uno o varios días para aplicar el mismo horario. Por ejemplo: lunes y jueves de 13:00 a 18:00, o lunes a viernes de 09:00 a 18:00. Al guardar, Mentalia crea una regla por cada día seleccionado con origen Mentalia.
           </div>
 
           {editandoId && (
@@ -708,7 +760,7 @@ export default function DisponibilidadPage({ user, goBack }) {
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-6">
             <input
               type="date"
               value={fechaInicio}
@@ -744,6 +796,30 @@ export default function DisponibilidadPage({ user, goBack }) {
               <option value="45">45 min</option>
               <option value="60">60 min</option>
               <option value="90">90 min</option>
+              <option value="personalizado">Personalizado</option>
+            </select>
+
+            {duracion === "personalizado" && (
+              <input
+                type="number"
+                min="15"
+                max="240"
+                step="1"
+                value={duracionPersonalizada}
+                onChange={(e) => setDuracionPersonalizada(e.target.value)}
+                placeholder="Minutos personalizados"
+                className="rounded-xl border px-4 py-3"
+                aria-label="Duración personalizada en minutos"
+              />
+            )}
+
+            <select value={descanso} onChange={(e) => setDescanso(e.target.value)} className="rounded-xl border px-4 py-3" aria-label="Descanso entre sesiones">
+              <option value="0">Descanso: 0 min</option>
+              <option value="5">Descanso: 5 min</option>
+              <option value="10">Descanso: 10 min</option>
+              <option value="15">Descanso: 15 min</option>
+              <option value="20">Descanso: 20 min</option>
+              <option value="30">Descanso: 30 min</option>
             </select>
           </div>
 
@@ -787,12 +863,11 @@ export default function DisponibilidadPage({ user, goBack }) {
             </button>
           </div>
 
-          {renderBloqueHorario("AM", "AM")}
-          {renderBloqueHorario("PM", "PM")}
+          {renderHorarioCronologico()}
         </section>
 
         <section className="rounded-2xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-center font-black text-slate-900">Reglas asociadas a Google Calendar</h2>
+          <h2 className="mb-4 text-center font-black text-slate-900">Reglas de disponibilidad</h2>
 
           {items.length === 0 ? (
             <p className="text-center text-slate-500">
@@ -804,12 +879,12 @@ export default function DisponibilidadPage({ user, goBack }) {
                 <div key={item.id} className="flex flex-col gap-3 rounded-xl border p-4 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="mb-2 inline-flex rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black uppercase text-blue-700">
-                      Google Calendar
+                      Mentalia
                     </div>
                     <p className="font-black text-slate-900">{obtenerNombreDia(item.dia_semana)}</p>
                     <p className="text-sm text-slate-500">
                       {item.hora_inicio.slice(0, 5)} - {" "}
-                      {item.hora_fin.slice(0, 5)} · {item.duracion_minutos} min
+                      {item.hora_fin.slice(0, 5)} · {item.duracion_minutos} min · descanso {item.descanso_minutos ?? 0} min
                     </p>
                     <p className="text-sm text-slate-500">
                       Desde {formatearFecha(item.fecha_inicio)} hasta {" "}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { crearPacienteApi, obtenerPacientes } from "../lib/mentaliaApi";
 
 export default function PacientesPage({ user, goBack, verFichaClinica }) {
   const [pacientes, setPacientes] = useState([]);
@@ -14,31 +14,28 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
   const [genero, setGenero] = useState("");
   const [contactoUrgencia, setContactoUrgencia] = useState("");
   const [telefonoEmergencia, setTelefonoEmergencia] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [mensajeOperacion, setMensajeOperacion] = useState("");
 
   async function cargarPacientes() {
-    const { data, error } = await supabase
-      .from("pacientes")
-      .select("*")
-      .eq("activo", true)
-      .order("fecha_crea", { ascending: false });
-
-    if (error) {
-      alert(error.message);
-      return;
+    try {
+      const data = await obtenerPacientes();
+      setPacientes(data || []);
+    } catch (error) {
+      alert(error.message || "No fue posible cargar los pacientes.");
     }
-
-    setPacientes(data || []);
   }
 
   async function crearPaciente() {
+    setMensajeOperacion("");
     if (!nombres || !apellidos || !identificador) {
-      alert("Nombres, apellidos e identificador son obligatorios.");
+      setMensajeOperacion("Nombres, apellidos e identificador son obligatorios.");
       return;
     }
 
-    const { error } = await supabase.from("pacientes").insert([
-      {
-        profesional_id: user.id,
+    setGuardando(true);
+    try {
+      await crearPacienteApi({
         nombres,
         apellidos,
         identificador,
@@ -48,15 +45,16 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
         genero: genero || null,
         contacto_urgencia: contactoUrgencia || null,
         telefono_emergencia: telefonoEmergencia || null,
-        activo: true,
-      },
-    ]);
-
-    if (error) {
-      alert(error.message);
+      });
+    } catch (error) {
+      if (error.code === "PATIENT_ALREADY_EXISTS") setMensajeOperacion("Ya existe un paciente con ese identificador.");
+      else if (error.code === "AUTH_REQUIRED" || error.status === 401) setMensajeOperacion("Tu sesión expiró. Inicia sesión nuevamente.");
+      else setMensajeOperacion(error.message || "No fue posible crear el paciente.");
+      setGuardando(false);
       return;
     }
 
+    setGuardando(false);
     setNombres("");
     setApellidos("");
     setIdentificador("");
@@ -67,8 +65,8 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
     setContactoUrgencia("");
     setTelefonoEmergencia("");
 
+    setMensajeOperacion("Paciente guardado correctamente.");
     await cargarPacientes();
-    alert("Paciente guardado correctamente.");
   }
 
   function abrirFicha(paciente) {
@@ -182,10 +180,16 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
 
           <button
             onClick={crearPaciente}
-            className="mt-4 w-full rounded-xl bg-[#18AFC1] py-3 font-black text-white"
+            disabled={guardando}
+            className="mt-4 w-full rounded-xl bg-[#18AFC1] py-3 font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Guardar paciente
+            {guardando ? "Guardando paciente..." : "Guardar paciente"}
           </button>
+          {mensajeOperacion && (
+            <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">
+              {mensajeOperacion}
+            </p>
+          )}
         </section>
 
         <section className="rounded-2xl bg-white p-6 shadow">

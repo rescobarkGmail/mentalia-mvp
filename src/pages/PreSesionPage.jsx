@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
 import { formatearFecha } from "../utils/formato";
 import {  obtenerAccessTokenGoogle,  leerJsonSesionDrive,} from "../lib/googleDriveClient";
+import { obtenerUltimaSesionClinica } from "../lib/mentaliaApi";
 
 
 export default function PreSesionPage({
@@ -35,18 +35,12 @@ export default function PreSesionPage({
       return;
     }
   
-    const { data, error } = await supabase
-      .from("sesiones_clinicas")
-      .select("*")
-      .eq("profesional_id", user.id)
-      .eq("paciente_id", pacienteId)
-      .order("fecha_crea", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-  
-    if (error) {
+    let data;
+    try {
+      data = await obtenerUltimaSesionClinica(pacienteId);
+    } catch (error) {
       setCargando(false);
-      alert(error.message);
+      alert(error.message || "No fue posible cargar la sesión clínica.");
       return;
     }
   

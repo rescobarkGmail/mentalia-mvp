@@ -22,7 +22,7 @@ export function cargarGoogleIdentityScript() {
   });
 }
 
-export async function obtenerAccessTokenGoogleCalendar() {
+export async function obtenerAccessTokenGoogleCalendar({ loginHint } = {}) {
   await cargarGoogleIdentityScript();
 
   const tokenGuardado = localStorage.getItem(TOKEN_KEY);
@@ -33,12 +33,28 @@ export async function obtenerAccessTokenGoogleCalendar() {
   }
 
   return new Promise((resolve, reject) => {
+    let finalizado = false;
+    const timeoutId = window.setTimeout(() => {
+      if (finalizado) return;
+      finalizado = true;
+      reject(
+        new Error(
+          "La autorización de Google Calendar no respondió. Permite ventanas emergentes y vuelve a intentar."
+        )
+      );
+    }, 15000);
+
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
       scope: CALENDAR_SCOPES,
+      ...(loginHint ? { login_hint: loginHint } : {}),
 
       callback: (response) => {
         console.log("Respuesta OAuth Google Calendar:", response);
+
+        if (finalizado) return;
+        finalizado = true;
+        window.clearTimeout(timeoutId);
 
         if (response.error) {
           reject(
@@ -64,9 +80,14 @@ export async function obtenerAccessTokenGoogleCalendar() {
       },
     });
 
-    client.requestAccessToken({
-      prompt: "",
-    });
+    try {
+      client.requestAccessToken({ prompt: "" });
+    } catch (error) {
+      if (finalizado) return;
+      finalizado = true;
+      window.clearTimeout(timeoutId);
+      reject(error);
+    }
   });
 }
 
@@ -94,7 +115,11 @@ export async function obtenerEventosCalendario({
     maxResults: String(maxResults),
   });
 
-  const response = await fetch(
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+  let response;
+  try {
+    response = await fetch(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       calendarId
     )}/events?${params.toString()}`,
@@ -102,8 +127,15 @@ export async function obtenerEventosCalendario({
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+      signal: controller.signal,
     }
-  );
+    );
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("Google Calendar tardó demasiado en responder.");
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const error = await response.text();

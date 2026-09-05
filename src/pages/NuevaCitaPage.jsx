@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import {
+  crearCita,
+  crearPacienteApi,
+  obtenerCitas,
+  obtenerDisponibilidad,
+  obtenerPacientes,
+} from "../lib/mentaliaApi";
 
 function fechaTexto(fecha) {
   const year = fecha.getFullYear();
@@ -29,6 +35,7 @@ export default function NuevaCitaPage({ user, goBack }) {
   const [nuevoTelefono, setNuevoTelefono] = useState("");
 
   const [mostrarConfirmacion, setMostrarConfirmacion] = useState(false);
+  const [mensajeError, setMensajeError] = useState("");
   const [mensajeWhatsapp, setMensajeWhatsapp] = useState("");
   const [telefonoWhatsapp, setTelefonoWhatsapp] = useState("");
 
@@ -42,35 +49,17 @@ export default function NuevaCitaPage({ user, goBack }) {
   }, [fecha, duracion, disponibilidad, citas]);
 
   async function cargarDatos() {
-    const { data: pacientesData, error: pacientesError } = await supabase
-      .from("pacientes")
-      .select("*")
-      .order("nombres", { ascending: true });
-
-    if (pacientesError) {
-      alert(pacientesError.message);
-      return;
-    }
-
-    const { data: citasData, error: citasError } = await supabase
-      .from("citas")
-      .select("*")
-      .order("fecha", { ascending: true })
-      .order("hora_inicio", { ascending: true });
-
-    if (citasError) {
-      alert(citasError.message);
-      return;
-    }
-
-    const { data: disponibilidadData, error: disponibilidadError } =
-      await supabase
-        .from("disponibilidad_profesional")
-        .select("*")
-        .eq("activo", true);
-
-    if (disponibilidadError) {
-      alert(disponibilidadError.message);
+    let pacientesData;
+    let citasData;
+    let disponibilidadData;
+    try {
+      [pacientesData, citasData, disponibilidadData] = await Promise.all([
+        obtenerPacientes(),
+        obtenerCitas(),
+        obtenerDisponibilidad(),
+      ]);
+    } catch (error) {
+      setMensajeError(error.message || "No fue posible cargar la agenda.");
       return;
     }
 
@@ -201,44 +190,44 @@ export default function NuevaCitaPage({ user, goBack }) {
   }
 
   async function guardarCita() {
+    setMensajeError("");
     if (!pacienteId || !fecha || !horaInicio || !duracion) {
-      alert("Selecciona paciente, fecha, horario y duración.");
+      setMensajeError("Selecciona paciente, fecha, horario y duración.");
       return;
     }
 
     if (esFechaHoraPasada(fecha, horaInicio)) {
-      alert("No puedes crear una cita en una fecha u hora pasada.");
+      setMensajeError("No puedes crear una cita en una fecha u hora pasada.");
       return;
     }
 
     if (!horarioExisteEnDisponibilidad(fecha, horaInicio)) {
-      alert(
-        "El horario seleccionado no está dentro de la disponibilidad configurada."
-      );
+      setMensajeError("El horario seleccionado no está dentro de la disponibilidad configurada.");
       return;
     }
 
     if (existeCitaEnHorario(fecha, horaInicio)) {
-      alert("Ese horario ya está reservado. Selecciona otro horario.");
+      setMensajeError("Ese horario ya está reservado. Selecciona otro horario.");
       return;
     }
 
-    const horaFin = calcularHoraFin(horaInicio, duracion);
-
-    const { error } = await supabase.from("citas").insert([
-      {
-        profesional_id: user.id,
-        paciente_id: pacienteId,
+    try {
+      await crearCita({
+        pacienteId,
         fecha,
-        hora_inicio: horaInicio,
-        hora_fin: horaFin,
-        estado: "reservada",
-        origen: "Mentalia",
-      },
-    ]);
-
-    if (error) {
-      alert(error.message);
+        horaInicio,
+        duracionMinutos: duracion,
+      });
+    } catch (error) {
+      if (error.code === "SLOT_ALREADY_BOOKED") {
+        setMensajeError("Ese horario ya está reservado. Actualiza la agenda y selecciona otro horario.");
+      } else if (error.code === "OUTSIDE_AVAILABILITY") {
+        setMensajeError("El horario ya no está dentro de la disponibilidad configurada.");
+      } else if (error.code === "AUTH_REQUIRED" || error.status === 401) {
+        setMensajeError("Tu sesión expiró. Inicia sesión nuevamente.");
+      } else {
+        setMensajeError(error.message || "No fue posible crear la cita.");
+      }
       return;
     }
 
@@ -264,29 +253,25 @@ export default function NuevaCitaPage({ user, goBack }) {
   }
 
   async function crearPacienteRapido() {
+    setMensajeError("");
     if (!nuevoNombre || !nuevoApellido || !nuevoIdentificador) {
-      alert("Nombre, apellido e identificador son obligatorios.");
+      setMensajeError("Nombre, apellido e identificador son obligatorios.");
       return;
     }
 
-    const { data, error } = await supabase
-      .from("pacientes")
-      .insert([
-        {
-          profesional_id: user.id,
-          nombres: nuevoNombre,
-          apellidos: nuevoApellido,
-          identificador: nuevoIdentificador,
-          email: nuevoEmail || null,
-          telefono: nuevoTelefono || null,
-          activo: true,
-        },
-      ])
-      .select()
-      .single();
-
-    if (error) {
-      alert(error.message);
+    let data;
+    try {
+      data = await crearPacienteApi({
+        nombres: nuevoNombre,
+        apellidos: nuevoApellido,
+        identificador: nuevoIdentificador,
+        email: nuevoEmail || null,
+        telefono: nuevoTelefono || null,
+      });
+    } catch (error) {
+      if (error.code === "PATIENT_ALREADY_EXISTS") setMensajeError("Ya existe un paciente con ese identificador.");
+      else if (error.code === "AUTH_REQUIRED" || error.status === 401) setMensajeError("Tu sesión expiró. Inicia sesión nuevamente.");
+      else setMensajeError(error.message || "No fue posible crear el paciente.");
       return;
     }
 
@@ -511,6 +496,24 @@ export default function NuevaCitaPage({ user, goBack }) {
 
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {mensajeError && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="text-center">
+              <div className="text-5xl">⚠️</div>
+              <h2 className="mt-3 text-xl font-black text-slate-800">No se pudo completar la operación</h2>
+              <p className="mt-3 text-sm text-slate-600">{mensajeError}</p>
+            </div>
+            <button
+              onClick={() => setMensajeError("")}
+              className="mt-6 w-full rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white"
+            >
+              Entendido
+            </button>
           </div>
         </div>
       )}
