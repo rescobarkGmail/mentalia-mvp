@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatearFecha } from "../utils/formato";
 import {
   obtenerAccessTokenGoogleCalendar,
@@ -115,9 +115,9 @@ export default function DisponibilidadPage({ user, goBack }) {
   const [cargandoDatos, setCargandoDatos] = useState(false);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
   const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
-  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(() => {
-    try { return localStorage.getItem("mentalia_google_calendar_activo") === "true"; } catch { return false; }
-  });
+  // Google Calendar siempre parte apagado al abrir la página. El profesional
+  // decide explícitamente cuándo desea superponer sus eventos.
+  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(false);
 
   const [modal, setModal] = useState({
     visible: false,
@@ -135,6 +135,18 @@ export default function DisponibilidadPage({ user, goBack }) {
   // permite desplazarse hacia la madrugada o la noche.
   const horasJornada = Array.from({ length: 24 }, (_, index) => index);
   const timelineRef = useRef(null);
+  const scrollPreservadoRef = useRef(null);
+
+  const itemsOrdenados = useMemo(() => {
+    return [...items].sort((a, b) => {
+      const fechaCreacionA = new Date(a.fecha_crea || 0).getTime();
+      const fechaCreacionB = new Date(b.fecha_crea || 0).getTime();
+      if (fechaCreacionA !== fechaCreacionB) return fechaCreacionB - fechaCreacionA;
+      const fechaInicioA = String(a.fecha_inicio || "");
+      const fechaInicioB = String(b.fecha_inicio || "");
+      return fechaInicioB.localeCompare(fechaInicioA);
+    });
+  }, [items]);
 
   function mostrarModal(title, message) {
     setModal({ visible: true, title, message });
@@ -192,23 +204,37 @@ export default function DisponibilidadPage({ user, goBack }) {
     if (user?.id && googleCalendarActivo) cargarEventosGoogleCalendar(semanaBase);
   }, [user?.id, semanaBase, googleCalendarActivo]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
+    if (scrollPreservadoRef.current !== null) {
+      timeline.scrollTop = scrollPreservadoRef.current;
+      scrollPreservadoRef.current = null;
+      return;
+    }
     const firstVisibleRow = timeline.querySelector('[data-hour="8"]');
     if (firstVisibleRow) {
-      timeline.scrollTop = Math.max(0, firstVisibleRow.offsetTop - 58);
+      firstVisibleRow.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+      // Mantiene la fila 08:00 justo bajo el encabezado sticky.
+      timeline.scrollTop = Math.max(0, timeline.scrollTop - 1);
     }
   }, [semanaBase, items.length, citas.length]);
 
   function cambiarEstadoGoogleCalendar(activo) {
     setGoogleCalendarActivo(activo);
-    try { localStorage.setItem("mentalia_google_calendar_activo", String(activo)); } catch { /* preferencia local */ }
     if (!activo) {
       setEventosGoogleCalendar([]);
       setErrorGoogleCalendar("");
       setCargandoGoogleCalendar(false);
     }
+  }
+
+  function eventosGoogleQueInicianEnHora(fecha, hora) {
+    return eventosGoogleCalendar.filter((evento) => {
+      if (!evento.fecha_inicio || evento.estado_google === "cancelled") return false;
+      const inicio = new Date(evento.fecha_inicio);
+      return !Number.isNaN(inicio.getTime()) && fechaTexto(inicio) === fecha && inicio.getHours() === hora;
+    });
   }
 
   function resetFormulario() {
@@ -275,9 +301,12 @@ export default function DisponibilidadPage({ user, goBack }) {
         if (evento.estado_google === "cancelled") return false;
 
         const inicioEvento = new Date(evento.fecha_inicio);
-        if (Number.isNaN(inicioEvento.getTime())) return false;
+        const finEvento = evento.fecha_fin ? new Date(evento.fecha_fin) : inicioEvento;
+        if (Number.isNaN(inicioEvento.getTime()) || Number.isNaN(finEvento.getTime())) return false;
 
-        return fechaTexto(inicioEvento) === fecha;
+        const inicioDia = crearFechaHora(fecha, "00:00");
+        const finDia = sumarDias(inicioDia, 1);
+        return hayCruceHorario(inicioDia, finDia, inicioEvento, finEvento);
       })
       .sort((a, b) => String(a.hora_inicio || "").localeCompare(String(b.hora_inicio || "")));
   }
@@ -312,8 +341,17 @@ export default function DisponibilidadPage({ user, goBack }) {
           hora_fin: slot.hora_fin,
           regla_id: regla.id,
           duracion_minutos: regla.duracion_minutos,
-          estado: eventoGoogle || citaInterna ? "ocupado" : "disponible",
-          motivo_ocupado: eventoGoogle ? "google_calendar" : citaInterna ? "mentalia" : null,
+          // Google se dibuja como una capa independiente en la grilla. No
+          // reemplaza ni cambia el color de los bloques de Mentalia.
+          estado: citaInterna ? "ocupado" : "disponible",
+          motivo_ocupado: citaInterna ? "mentalia" : null,
+          // La regla de Mentalia es siempre la base de la grilla. Google
+          // Calendar solo agrega una ocupación visual sobre ese bloque; no
+          // elimina ni filtra los horarios definidos en Mentalia.
+          fuentes_ocupacion: [
+            ...(citaInterna ? ["mentalia"] : []),
+            ...(eventoGoogle ? ["google_calendar"] : []),
+          ],
           citaInterna,
           eventoGoogle,
         });
@@ -485,33 +523,36 @@ export default function DisponibilidadPage({ user, goBack }) {
   }
 
   function cambiarSemana(cantidadDias) {
+    if (timelineRef.current) {
+      scrollPreservadoRef.current = timelineRef.current.scrollTop;
+    }
     setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidadDias)));
   }
 
   function renderSlot(slot) {
     const ocupado = slot.estado === "ocupado";
     const ocupadoGoogle = slot.motivo_ocupado === "google_calendar";
+    const ocupadoMentalia = Boolean(slot.citaInterna);
     const paciente = slot.citaInterna?.pacientes || slot.citaInterna?.paciente;
     const nombrePaciente = paciente
       ? `${paciente.nombres || ""} ${paciente.apellidos || ""}`.trim()
       : "Reservado";
+    const hayAmbasFuentes = Boolean(slot.citaInterna && slot.eventoGoogle);
 
     return (
       <div
         key={`${slot.fecha}-${slot.hora_inicio}-${slot.regla_id}`}
         title={ocupadoGoogle ? slot.eventoGoogle?.titulo : ocupado ? nombrePaciente : "Disponible para reserva"}
         className={`rounded-lg border px-2 py-1.5 text-xs font-bold leading-tight ${
-          ocupado
-            ? ocupadoGoogle
-              ? "border-blue-200 bg-blue-50 text-blue-700"
-              : "border-red-200 bg-red-50 text-red-700"
+          ocupadoMentalia
+            ? "border-red-200 bg-red-50 text-red-700"
             : "border-emerald-200 bg-emerald-50 text-emerald-700"
         }`}
       >
         <span>{slot.hora_inicio} - {slot.hora_fin}</span>
-        {ocupado && (
+        {ocupadoMentalia && (
           <p className="mt-0.5 line-clamp-1 text-[10px] font-semibold">
-            {ocupadoGoogle ? slot.eventoGoogle?.titulo || "Google Calendar" : nombrePaciente}
+            {hayAmbasFuentes ? `${nombrePaciente} · Google ocupado` : nombrePaciente}
           </p>
         )}
       </div>
@@ -627,9 +668,22 @@ export default function DisponibilidadPage({ user, goBack }) {
               </div>
               {slotsPorDia.map((slots, dayIndex) => {
                 const slotsDeLaHora = slots.filter((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora);
+                const fechaDia = fechaTexto(diasSemana[dayIndex]);
+                const eventosDeLaHora = googleCalendarActivo ? eventosGoogleQueInicianEnHora(fechaDia, hora) : [];
                 return (
                   <div key={`${hora}-${dayIndex}`} className={`${haySlotsEnLaHora ? "min-h-0" : "min-h-[28px]"} bg-white p-1`}>
                     <div className="space-y-1">
+                      {eventosDeLaHora.map((evento) => (
+                        <div
+                          key={evento.google_calendar_event_id || `${fechaDia}-${hora}-${evento.titulo}`}
+                          className="relative z-[1] rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold leading-tight text-blue-800"
+                          style={{ transform: `translateY(${(Number(evento.hora_inicio?.slice(3, 5)) || 0) * 0.35}px)` }}
+                          title={evento.titulo}
+                        >
+                          <span>{evento.hora_inicio || `${String(hora).padStart(2, "0")}:00`}{evento.hora_fin ? ` - ${evento.hora_fin}` : ""}</span>
+                          <p className="mt-0.5 line-clamp-1 text-[10px] font-semibold">{evento.titulo || "Evento Google"}</p>
+                        </div>
+                      ))}
                       {slotsDeLaHora.map((slot) => renderSlot(slot))}
                     </div>
                   </div>
@@ -659,14 +713,22 @@ export default function DisponibilidadPage({ user, goBack }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" role="switch" aria-checked={googleCalendarActivo} onClick={() => cambiarEstadoGoogleCalendar(!googleCalendarActivo)} className={`rounded-xl px-4 py-2 text-sm font-black ${googleCalendarActivo ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-600"}`}>
-              Google Calendar: {googleCalendarActivo ? "Activado" : "Desactivado"}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={googleCalendarActivo}
+              aria-label="Activar o desactivar Google Calendar"
+              onClick={() => cambiarEstadoGoogleCalendar(!googleCalendarActivo)}
+              className="inline-flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-700 shadow-sm"
+            >
+              <span>Google Calendar</span>
+              <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${googleCalendarActivo ? "bg-blue-600" : "bg-slate-300"}`}>
+                <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${googleCalendarActivo ? "translate-x-5" : "translate-x-0.5"}`} />
+              </span>
+              <span className={googleCalendarActivo ? "text-blue-700" : "text-slate-500"}>
+                {googleCalendarActivo ? "ON" : "OFF"}
+              </span>
             </button>
-            {googleCalendarActivo && (
-              <button type="button" onClick={() => cargarEventosGoogleCalendar(semanaBase)} disabled={cargandoGoogleCalendar} className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:opacity-60">
-                {cargandoGoogleCalendar ? "Leyendo Google Calendar..." : "Actualizar Google Calendar"}
-              </button>
-            )}
           </div>
         </div>
 
@@ -675,24 +737,6 @@ export default function DisponibilidadPage({ user, goBack }) {
             {errorGoogleCalendar}
           </div>
         )}
-
-        <section className="mb-6 rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm">
-          <h2 className="mb-3 text-lg font-black text-slate-900">Modelo operativo de disponibilidad</h2>
-          <div className="grid gap-3 text-sm leading-6 text-slate-600 md:grid-cols-3">
-            <div className="rounded-2xl bg-emerald-50 p-4">
-              <p className="font-black text-emerald-700">1. Reglas de Mentalia</p>
-              <p>Las reglas se guardan mediante la API y quedan asociadas al profesional autenticado.</p>
-            </div>
-            <div className="rounded-2xl bg-blue-50 p-4">
-              <p className="font-black text-blue-700">2. Ocupación externa opcional</p>
-              <p>Si activas Google Calendar, sus eventos bloquean horarios dentro de las ventanas configuradas.</p>
-            </div>
-            <div className="rounded-2xl bg-slate-50 p-4">
-              <p className="font-black text-slate-700">3. Horas para paciente</p>
-              <p>El paciente verá solo bloques libres: reglas Google Calendar menos eventos ocupados y reservas vigentes.</p>
-            </div>
-          </div>
-        </section>
 
         <section className="mb-6 rounded-2xl bg-white p-6 shadow">
           <h2 className="mb-4 text-center font-black text-slate-900">
@@ -852,7 +896,9 @@ export default function DisponibilidadPage({ user, goBack }) {
                 {formatearFecha(fechaTexto(finSemana))}
               </h2>
               <p className="text-xs text-slate-500">
-                {cargandoGoogleCalendar
+                {!googleCalendarActivo
+                  ? "Google Calendar desactivado · mostrando disponibilidad de Mentalia"
+                  : cargandoGoogleCalendar
                   ? "Leyendo eventos ocupados desde Google Calendar..."
                   : `${eventosGoogleCalendar.length} eventos Google Calendar detectados en la semana`}
               </p>
@@ -867,28 +913,34 @@ export default function DisponibilidadPage({ user, goBack }) {
         </section>
 
         <section className="rounded-2xl bg-white p-6 shadow">
-          <h2 className="mb-4 text-center font-black text-slate-900">Reglas de disponibilidad</h2>
+          <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-black text-slate-900">Reglas de disponibilidad</h2>
+              <p className="text-xs text-slate-500">Mostrando las reglas más recientes primero</p>
+            </div>
+            <span className="text-xs font-bold text-slate-400">{itemsOrdenados.length} reglas</span>
+          </div>
 
           {items.length === 0 ? (
             <p className="text-center text-slate-500">
-              Aún no tienes disponibilidad asociada a Google Calendar. Las reglas históricas de Mentalia no se muestran en esta pantalla.
+              Aún no tienes reglas de disponibilidad en Mentalia.
             </p>
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
-              {items.map((item) => (
+              {itemsOrdenados.map((item) => (
                 <div key={item.id} className="flex flex-col gap-3 rounded-xl border p-4 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="mb-2 inline-flex rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black uppercase text-blue-700">
                       Mentalia
                     </div>
                     <p className="font-black text-slate-900">{obtenerNombreDia(item.dia_semana)}</p>
-                    <p className="text-sm text-slate-500">
-                      {item.hora_inicio.slice(0, 5)} - {" "}
-                      {item.hora_fin.slice(0, 5)} · {item.duracion_minutos} min · descanso {item.descanso_minutos ?? 0} min
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      Desde {formatearFecha(item.fecha_inicio)} hasta {" "}
-                      {formatearFecha(item.fecha_fin)}
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs font-bold text-slate-600">
+                      <span className="rounded-full bg-slate-100 px-2 py-1">{item.hora_inicio.slice(0, 5)} – {item.hora_fin.slice(0, 5)}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-1">{item.duracion_minutos} min</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-1">Descanso {item.descanso_minutos ?? 0} min</span>
+                    </div>
+                    <p className="mt-2 text-sm font-semibold text-slate-600">
+                      Vigencia: {formatearFecha(item.fecha_inicio)} → {formatearFecha(item.fecha_fin)}
                     </p>
                   </div>
 
