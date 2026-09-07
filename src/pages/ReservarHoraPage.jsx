@@ -270,6 +270,7 @@ export default function ReservarHoraPage({
   );
   const [fechaSeleccionada, setFechaSeleccionada] = useState(null);
   const [slotSeleccionado, setSlotSeleccionado] = useState(null);
+  const [modalidadReserva, setModalidadReserva] = useState("presencial");
 
   const [paso, setPaso] = useState("horario");
   const [cargandoPerfil, setCargandoPerfil] = useState(true);
@@ -489,6 +490,7 @@ export default function ReservarHoraPage({
             hora,
             hora_fin: horaFin,
             duracion,
+            modalidad: bloque.modalidad || "presencial",
             dia: dia.dia,
           });
         }
@@ -506,6 +508,7 @@ export default function ReservarHoraPage({
 
   function seleccionarSlot(slot) {
     setSlotSeleccionado(slot);
+    setModalidadReserva(slot.modalidad === "hibrida" ? "presencial" : (slot.modalidad || "presencial"));
     setPaso("datos");
     setErroresFormulario({});
   }
@@ -728,6 +731,7 @@ export default function ReservarHoraPage({
           p_identificador: rutFormateado,
           p_primera_atencion: primeraAtencion || null,
           p_canal_contacto: canalContacto,
+          p_modalidad: modalidadReserva,
         }
       );
 
@@ -1034,6 +1038,15 @@ export default function ReservarHoraPage({
               />
 
               <div className="grid gap-4 sm:grid-cols-2">
+                {slotSeleccionado?.modalidad === "hibrida" && (
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1 block text-sm font-black text-slate-700">Modalidad de atención *</span>
+                    <select value={modalidadReserva} onChange={(e) => setModalidadReserva(e.target.value)} className="w-full rounded-xl border px-4 py-3 outline-cyan-400">
+                      <option value="presencial">Presencial</option>
+                      <option value="online">Online</option>
+                    </select>
+                  </label>
+                )}
                 <label className="block">
                   <span className="mb-1 block text-sm font-black text-slate-700">
                     Canal preferido

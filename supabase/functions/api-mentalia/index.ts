@@ -135,11 +135,12 @@ function validateAvailabilityPayload(body: Record<string, unknown>) {
   const endDate = body.fecha_fin;
   const duration = Number(body.duracion_minutos);
   const descanso = body.descanso_minutos === undefined || body.descanso_minutos === null || body.descanso_minutos === "" ? 0 : Number(body.descanso_minutos);
+  const modalidad = typeof body.modalidad === "string" && ["presencial", "online", "hibrida", "domicilio"].includes(body.modalidad) ? body.modalidad : "presencial";
   if (!Number.isInteger(day) || day < 1 || day > 7 || !isTime(start) || !isTime(end) || !isDate(startDate) || !isDate(endDate) || !Number.isInteger(duration) || duration < 15 || duration > 240 || !Number.isInteger(descanso) || descanso < 0 || descanso > 120) {
     throw new HttpError(400, "INVALID_AVAILABILITY", "dia_semana, fechas, horas y una duración entre 15 y 240 minutos son obligatorios.");
   }
   if (start >= end || startDate > endDate) throw new HttpError(400, "INVALID_AVAILABILITY_RANGE", "La hora y fecha de inicio deben ser menores o iguales al término.");
-  return { dia_semana: day, hora_inicio: start, hora_fin: end, fecha_inicio: startDate, fecha_fin: endDate, duracion_minutos: duration, descanso_minutos: descanso };
+  return { dia_semana: day, hora_inicio: start, hora_fin: end, fecha_inicio: startDate, fecha_fin: endDate, duracion_minutos: duration, descanso_minutos: descanso, modalidad };
 }
 
 async function ensureAvailabilityCanChange(supabase: SupabaseClient, auth: AuthContext, rule: Record<string, unknown>) {

@@ -429,7 +429,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
               <div className="mt-4 rounded-2xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
                 <p className="font-black">Edición en Google Drive</p>
                 <p>
-                  Al guardar, se actualizará el archivo JSON en Drive. Supabase
+                  Al guardar, se actualizará el archivo JSON en Drive. La información
                   mantendrá solo metadatos.
                 </p>
               </div>

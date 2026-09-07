@@ -317,7 +317,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
             </h2>
 
             <p className="mt-1 text-sm text-amber-800">
-              El audio se procesa temporalmente y no se guarda en Supabase ni en Drive.
+              El audio se procesa temporalmente y no se almacena.
             </p>
 
             <div className="mt-5 flex flex-col gap-3 md:flex-row">

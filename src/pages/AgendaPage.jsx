@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Building2, MapPin, Shuffle, Video } from "lucide-react";
 import { formatearFecha } from "../utils/formato";
 import {
   obtenerAccessTokenGoogleCalendar,
@@ -49,6 +49,27 @@ function sumarDias(fecha, cantidadDias) {
   return nueva;
 }
 
+function generarSlots(horaInicio, horaFin, duracion, descanso = 0) {
+  const [hi, mi] = String(horaInicio).slice(0, 5).split(":").map(Number);
+  const [hf, mf] = String(horaFin).slice(0, 5).split(":").map(Number);
+  let actual = hi * 60 + mi;
+  const fin = hf * 60 + mf;
+  const slots = [];
+  while (actual + Number(duracion) <= fin) {
+    const siguiente = actual + Number(duracion);
+    const formato = (minutos) => `${String(Math.floor(minutos / 60)).padStart(2, "0")}:${String(minutos % 60).padStart(2, "0")}`;
+    slots.push({ hora_inicio: formato(actual), hora_fin: formato(siguiente) });
+    actual = siguiente + Number(descanso || 0);
+  }
+  return slots;
+}
+
+function ModalidadAgenda({ modalidad = "presencial" }) {
+  const config = { presencial: ["Presencial", Building2], online: ["Online", Video], hibrida: ["Híbrida", Shuffle], domicilio: ["A domicilio", MapPin] }[modalidad] || ["Presencial", Building2];
+  const [label, Icon] = config;
+  return <span className="inline-flex items-center gap-1 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[9px] font-black text-cyan-700"><Icon size={11} aria-hidden="true" />{label}</span>;
+}
+
 function extraerFechaDesdeISO(fechaISO) {
   if (!fechaISO) return null;
   return fechaISO.slice(0, 10);
@@ -65,6 +86,62 @@ function StatusBadge({ status }) {
     no_presentada: "bg-orange-100 text-orange-700",
     realizada: "bg-emerald-100 text-emerald-700",
   };
+
+  function slotsMentaliaDelDia(fechaObj) {
+    const fecha = fechaTexto(fechaObj);
+    const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+    const reglas = disponibilidad.filter((regla) =>
+      (regla.activo === undefined || regla.activo === true) &&
+      Number(regla.dia_semana) === dia &&
+      String(regla.fecha_inicio || "") <= fecha && String(regla.fecha_fin || "") >= fecha
+    );
+    return reglas.flatMap((regla) => generarSlots(regla.hora_inicio, regla.hora_fin, regla.duracion_minutos, regla.descanso_minutos).map((slot) => ({ ...slot, fecha })));
+  }
+
+  function eventoGoogleEnHora(fecha, hora) {
+    return eventosGoogleCalendar.filter((evento) => {
+      const inicio = evento.fecha_inicio ? new Date(evento.fecha_inicio) : null;
+      return inicio && !Number.isNaN(inicio.getTime()) && fechaTexto(inicio) === fecha && inicio.getHours() === hora;
+    });
+  }
+
+  function renderHorarioCronologicoAgenda() {
+    const horas = Array.from({ length: 24 }, (_, index) => index);
+    const slotsPorDia = diasSemana.map(slotsMentaliaDelDia);
+    return (
+      <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl">
+        <div className="min-w-[1050px]">
+          <div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px">
+            <div className="bg-white p-2" />
+            {diasSemana.map((fechaObj) => <div key={fechaTexto(fechaObj)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (fechaObj.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(fechaObj))}</p></div>)}
+          </div>
+          {horas.map((hora) => {
+            const haySlots = slotsPorDia.some((slots) => slots.some((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora));
+            return <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px">
+              <div className={`${haySlots ? "min-h-0" : "min-h-[28px]"} bg-slate-50 p-1 text-center text-sm font-black text-slate-500`}>{String(hora).padStart(2, "0")}:00</div>
+              {diasSemana.map((fechaObj, index) => {
+                const fecha = fechaTexto(fechaObj);
+                const slots = slotsPorDia[index].filter((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora);
+                const eventos = googleCalendarActivo ? eventoGoogleEnHora(fecha, hora) : [];
+                const citaParaSlot = (slot) => citas.find((cita) => cita.fecha?.slice(0, 10) === fecha && cita.hora_inicio?.slice(0, 5) === slot.hora_inicio && cita.estado !== "cancelada");
+                return <div key={`${fecha}-${hora}`} className={`${haySlots ? "min-h-0" : "min-h-[28px]"} bg-white p-1`}>
+                  <div className="space-y-1">
+                    {eventos.map((evento) => <div key={evento.google_calendar_event_id || evento.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold leading-tight text-blue-800" title={evento.titulo}><span>{evento.hora_inicio || `${String(hora).padStart(2, "0")}:00`}{evento.hora_fin ? ` - ${evento.hora_fin}` : ""}</span><p className="line-clamp-1 text-[10px]">{evento.titulo || "Evento Google"}</p></div>)}
+                    {slots.map((slot) => { const cita = citaParaSlot(slot); return cita ? <div key={`${fecha}-${slot.hora_inicio}`} className="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700"><span>{slot.hora_inicio} - {slot.hora_fin}</span><p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p></div> : <div key={`${fecha}-${slot.hora_inicio}`} className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700">{slot.hora_inicio} - {slot.hora_fin}</div>; })}
+                  </div>
+                </div>;
+              })}
+            </div>;
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function cambiarSemanaAgenda(cantidadDias) {
+    if (timelineRef.current) scrollPreservadoRef.current = timelineRef.current.scrollTop;
+    setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidadDias)));
+  }
 
   return (
     <span
@@ -95,13 +172,9 @@ export default function AgendaPage({
   const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
   const [errorGoogleCalendar, setErrorGoogleCalendar] = useState("");
-  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(() => {
-    try {
-      return localStorage.getItem("mentalia_google_calendar_activo") === "true";
-    } catch {
-      return false;
-    }
-  });
+  const [googleCalendarActivo, setGoogleCalendarActivo] = useState(false);
+  const timelineRef = useRef(null);
+  const scrollPreservadoRef = useRef(null);
   const [eventoGoogleSeleccionado, setEventoGoogleSeleccionado] =
     useState(null);
 
@@ -256,11 +329,6 @@ export default function AgendaPage({
 
   function cambiarEstadoGoogleCalendar(activo) {
     setGoogleCalendarActivo(activo);
-    try {
-      localStorage.setItem("mentalia_google_calendar_activo", String(activo));
-    } catch {
-      // La preferencia visual no debe impedir el uso de la agenda interna.
-    }
 
     if (!activo) {
       setEventosGoogleCalendar([]);
@@ -268,6 +336,23 @@ export default function AgendaPage({
       setCargandoGoogleCalendar(false);
     }
   }
+
+  useLayoutEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    if (scrollPreservadoRef.current !== null) {
+      timeline.scrollTop = scrollPreservadoRef.current;
+      scrollPreservadoRef.current = null;
+      return;
+    }
+    const row = timeline.querySelector('[data-hour="8"]');
+    if (row) {
+      const encabezado = timeline.querySelector(".sticky");
+      const alturaEncabezado = encabezado?.getBoundingClientRect().height || 0;
+      const diferencia = row.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+      timeline.scrollTop = Math.max(0, timeline.scrollTop + diferencia - alturaEncabezado);
+    }
+  }, [semanaBase, citas.length, disponibilidad.length]);
 
   const hoy = fechaTexto(new Date());
 
@@ -777,6 +862,30 @@ export default function AgendaPage({
     );
   }
 
+  function slotsMentaliaDelDiaAgenda(fechaObj) {
+    const fecha = fechaTexto(fechaObj);
+    const dia = fechaObj.getDay() || 7;
+    return disponibilidad.filter((regla) => (regla.activo === undefined || regla.activo === true) && Number(regla.dia_semana) === dia && String(regla.fecha_inicio || "") <= fecha && String(regla.fecha_fin || "") >= fecha).flatMap((regla) => generarSlots(regla.hora_inicio, regla.hora_fin, regla.duracion_minutos, regla.descanso_minutos).map((slot) => ({ ...slot, fecha, modalidad: regla.modalidad || "presencial", duracion_minutos: regla.duracion_minutos })));
+  }
+
+  function eventoGoogleEnHoraAgenda(fecha, hora) {
+    return eventosGoogleCalendar.filter((evento) => { const inicio = evento.fecha_inicio ? new Date(evento.fecha_inicio) : null; return inicio && !Number.isNaN(inicio.getTime()) && fechaTexto(inicio) === fecha && inicio.getHours() === hora; });
+  }
+
+  function renderHorarioAgenda() {
+    const horas = Array.from({ length: 24 }, (_, i) => i);
+    const slotsPorDia = diasSemana.map(slotsMentaliaDelDiaAgenda);
+    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]"><div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>{horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="min-h-[28px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>{diasSemana.map((f, i) => { const fecha = fechaTexto(f); const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : []; const slots = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora); return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">{eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800"><span>{e.hora_inicio || `${String(hora).padStart(2, "0")}:00`}{e.hora_fin ? ` - ${e.hora_fin}` : ""}</span><p className="line-clamp-1 text-[10px]">{e.titulo || "Evento Google"}</p></div>)}{slots.map((s) => { const cita = citas.find((c) => c.fecha?.slice(0, 10) === fecha && c.hora_inicio?.slice(0, 5) === s.hora_inicio && c.estado !== "cancelada"); return cita ? <div key={s.hora_inicio} className="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700">{s.hora_inicio} - {s.hora_fin}<p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p></div> : <div key={s.hora_inicio} className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700">{s.hora_inicio} - {s.hora_fin}</div>;})}</div></div>;})}</div>)}</div></div>;
+  }
+
+  function cambiarSemanaAgenda(cantidad) { if (timelineRef.current) scrollPreservadoRef.current = timelineRef.current.scrollTop; setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidad))); }
+
+  function renderHorarioAgendaConModalidad() {
+    const horas = Array.from({ length: 24 }, (_, i) => i);
+    const slotsPorDia = diasSemana.map(slotsMentaliaDelDiaAgenda);
+    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]"><div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>{horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="min-h-[28px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>{diasSemana.map((f, i) => { const fecha = fechaTexto(f); const slots = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora); const continuaciones = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) < hora && (Number(s.hora_fin.slice(0, 2)) + (s.hora_fin.slice(3, 5) !== "00" ? 1 : 0)) > hora); const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : []; return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">{eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800">{e.hora_inicio} - {e.hora_fin}<p className="text-[10px]">{e.titulo}</p></div>)}{continuaciones.map((s) => <div key={`cont-${fecha}-${s.hora_inicio}-${hora}`} className="min-h-[28px] rounded-lg border border-emerald-200 bg-emerald-50" />)}{slots.map((s) => { const cita = citas.find((c) => c.fecha?.slice(0, 10) === fecha && c.hora_inicio?.slice(0, 5) === s.hora_inicio && c.estado !== "cancelada"); return <div key={s.hora_inicio} className={cita ? "rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700" : "rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700"}><div className="flex items-center justify-between gap-1"><span>{s.hora_inicio} - {s.hora_fin}</span><ModalidadAgenda modalidad={s.modalidad} /></div>{cita && <p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p>}</div>;})}</div></div>;})}</div>)}</div></div>;
+  }
+
   return (
     <main className="min-h-screen bg-[#eef8fb] px-4 py-6 lg:px-8">
       <div className="mx-auto w-full max-w-[1600px] px-2">
@@ -788,38 +897,13 @@ export default function AgendaPage({
           <div>
             <h1 className="text-3xl font-black">Agenda</h1>
 
-            <p className="text-sm text-slate-500">
-              {cargando
-                ? "Cargando agenda..."
-                : `${citas.length} citas registradas en Mentalia`}
-            </p>
-
-            <p className="mt-1 text-xs text-slate-400">
-              Profesional ID: {user?.id || "no disponible"}
-            </p>
+            <p className="text-sm text-slate-500">{cargando ? "Cargando agenda..." : "Agenda de citas y disponibilidad"}</p>
           </div>
-
-          <div className="flex flex-col gap-2 md:flex-row">
-            {googleCalendarActivo && (
-              <button
-                onClick={() => cargarAgendaDesdeGoogleCalendar(semanaBase)}
-                disabled={cargandoGoogleCalendar}
-                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {cargandoGoogleCalendar
-                  ? "Cargando Google Calendar..."
-                  : "Actualizar Google Calendar"}
-              </button>
-            )}
-
-            <button
-              onClick={cargarCitas}
-              disabled={cargando}
-              className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700 disabled:opacity-50"
-            >
-              {cargando ? "Actualizando..." : "Actualizar Mentalia"}
-            </button>
-          </div>
+          <button type="button" role="switch" aria-checked={googleCalendarActivo} aria-label="Activar o desactivar Google Calendar" onClick={() => cambiarEstadoGoogleCalendar(!googleCalendarActivo)} className="inline-flex items-center gap-3 self-start rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-700 shadow-sm md:self-auto">
+            <span>Google Calendar</span>
+            <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${googleCalendarActivo ? "bg-blue-600" : "bg-slate-300"}`}><span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${googleCalendarActivo ? "translate-x-5" : "translate-x-0.5"}`} /></span>
+            <span className={googleCalendarActivo ? "text-blue-700" : "text-slate-500"}>{googleCalendarActivo ? "ON" : "OFF"}</span>
+          </button>
         </div>
 
         {errorGoogleCalendar && (
@@ -828,7 +912,8 @@ export default function AgendaPage({
           </div>
         )}
 
-        <section className="mb-6 rounded-[24px] border border-blue-100 bg-blue-50 p-4 shadow-sm">
+        {/* La integración se controla desde el switch compacto del encabezado. */}
+        {/* <section className="mb-6 rounded-[24px] border border-blue-100 bg-blue-50 p-4 shadow-sm">
           <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-lg font-black text-blue-900">
@@ -866,7 +951,7 @@ export default function AgendaPage({
               </button>
             </div>
           </div>
-        </section>
+        </section> */}
 
         <div className="mb-6 flex rounded-full bg-cyan-100 p-1">
           <button
@@ -936,7 +1021,7 @@ export default function AgendaPage({
           <section className="rounded-[28px] border border-cyan-100 bg-white p-6 shadow">
             <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <button
-                onClick={() => setSemanaBase(sumarDias(semanaBase, -7))}
+                onClick={() => cambiarSemanaAgenda(-7)}
                 className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
               >
                 ← Semana anterior
@@ -954,7 +1039,7 @@ export default function AgendaPage({
               </div>
 
               <button
-                onClick={() => setSemanaBase(sumarDias(semanaBase, 7))}
+                onClick={() => cambiarSemanaAgenda(7)}
                 className="rounded-xl border px-4 py-2 font-bold text-cyan-700"
               >
                 Semana siguiente →
@@ -966,7 +1051,9 @@ export default function AgendaPage({
                 Cargando agenda semanal desde Mentalia{googleCalendarActivo ? " y Google Calendar" : ""}...
               </p>
             ) : (
-              <div className="grid gap-4 md:grid-cols-7">
+              <>
+                {renderHorarioAgendaConModalidad()}
+              <div className="hidden grid gap-4 md:grid-cols-7">
                 {diasSemana.map((fechaObj) => {
                   const fecha = fechaTexto(fechaObj);
                   const dia = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
@@ -1013,6 +1100,7 @@ export default function AgendaPage({
                   );
                 })}
               </div>
+              </>
             )}
           </section>
         )}

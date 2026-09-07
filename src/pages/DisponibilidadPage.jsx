@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Building2, MapPin, Shuffle, Video } from "lucide-react";
 import { formatearFecha } from "../utils/formato";
 import {
   obtenerAccessTokenGoogleCalendar,
@@ -93,6 +94,17 @@ function nombreDiasSeleccionados(ids) {
     .join(", ");
 }
 
+function ModalidadBadge({ modalidad = "presencial" }) {
+  const config = {
+    presencial: { label: "Presencial", Icon: Building2 },
+    online: { label: "Online", Icon: Video },
+    hibrida: { label: "Híbrida", Icon: Shuffle },
+    domicilio: { label: "A domicilio", Icon: MapPin },
+  }[modalidad] || { label: "Presencial", Icon: Building2 };
+  const Icon = config.Icon;
+  return <span className="inline-flex items-center gap-1 rounded-full bg-cyan-50 px-2 py-1 text-[10px] font-black text-cyan-700"><Icon size={12} aria-hidden="true" />{config.label}</span>;
+}
+
 export default function DisponibilidadPage({ user, goBack }) {
   const hoy = fechaTexto(new Date());
 
@@ -107,6 +119,7 @@ export default function DisponibilidadPage({ user, goBack }) {
   const [duracion, setDuracion] = useState("60");
   const [duracionPersonalizada, setDuracionPersonalizada] = useState("");
   const [descanso, setDescanso] = useState("0");
+  const [modalidad, setModalidad] = useState("presencial");
   const [fechaInicio, setFechaInicio] = useState(hoy);
   const [fechaFin, setFechaFin] = useState("");
   const [guardando, setGuardando] = useState(false);
@@ -244,6 +257,7 @@ export default function DisponibilidadPage({ user, goBack }) {
     setDuracion("60");
     setDuracionPersonalizada("");
     setDescanso("0");
+    setModalidad("presencial");
     setFechaInicio(hoy);
     setFechaFin("");
     setEditandoId(null);
@@ -341,6 +355,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           hora_fin: slot.hora_fin,
           regla_id: regla.id,
           duracion_minutos: regla.duracion_minutos,
+          modalidad: regla.modalidad || "presencial",
           // Google se dibuja como una capa independiente en la grilla. No
           // reemplaza ni cambia el color de los bloques de Mentalia.
           estado: citaInterna ? "ocupado" : "disponible",
@@ -407,6 +422,7 @@ export default function DisponibilidadPage({ user, goBack }) {
         : duracionGuardada
     );
     setDescanso(String(item.descanso_minutos ?? 0));
+    setModalidad(item.modalidad || "presencial");
     setFechaInicio(item.fecha_inicio);
     setFechaFin(item.fecha_fin);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -455,6 +471,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           hora_fin: horaFin,
           duracion_minutos: duracionEfectiva,
           descanso_minutos: Number(descanso),
+          modalidad,
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
           activo: true,
@@ -470,6 +487,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           hora_fin: horaFin,
           duracion_minutos: duracionEfectiva,
           descanso_minutos: Number(descanso),
+          modalidad,
           fecha_inicio: fechaInicio,
           fecha_fin: fechaFin,
           activo: true,
@@ -549,7 +567,7 @@ export default function DisponibilidadPage({ user, goBack }) {
             : "border-emerald-200 bg-emerald-50 text-emerald-700"
         }`}
       >
-        <span>{slot.hora_inicio} - {slot.hora_fin}</span>
+        <div className="flex items-center justify-between gap-1"><span>{slot.hora_inicio} - {slot.hora_fin}</span><ModalidadBadge modalidad={slot.modalidad} /></div>
         {ocupadoMentalia && (
           <p className="mt-0.5 line-clamp-1 text-[10px] font-semibold">
             {hayAmbasFuentes ? `${nombrePaciente} · Google ocupado` : nombrePaciente}
@@ -668,11 +686,19 @@ export default function DisponibilidadPage({ user, goBack }) {
               </div>
               {slotsPorDia.map((slots, dayIndex) => {
                 const slotsDeLaHora = slots.filter((slot) => Number(slot.hora_inicio.slice(0, 2)) === hora);
+                const continuaciones = slots.filter((slot) => {
+                  const inicio = Number(slot.hora_inicio.slice(0, 2));
+                  const fin = Number(slot.hora_fin.slice(0, 2)) + (slot.hora_fin.slice(3, 5) !== "00" ? 1 : 0);
+                  return inicio < hora && fin > hora;
+                });
                 const fechaDia = fechaTexto(diasSemana[dayIndex]);
                 const eventosDeLaHora = googleCalendarActivo ? eventosGoogleQueInicianEnHora(fechaDia, hora) : [];
                 return (
                   <div key={`${hora}-${dayIndex}`} className={`${haySlotsEnLaHora ? "min-h-0" : "min-h-[28px]"} bg-white p-1`}>
                     <div className="space-y-1">
+                      {continuaciones.map((slot) => (
+                        <div key={`continuacion-${slot.fecha}-${slot.hora_inicio}-${hora}`} className="min-h-[28px] rounded-lg border border-emerald-200 bg-emerald-50" aria-label={`Continuación de ${slot.hora_inicio} a ${slot.hora_fin}`} />
+                      ))}
                       {eventosDeLaHora.map((evento) => (
                         <div
                           key={evento.google_calendar_event_id || `${fechaDia}-${hora}-${evento.titulo}`}
@@ -742,10 +768,6 @@ export default function DisponibilidadPage({ user, goBack }) {
           <h2 className="mb-4 text-center font-black text-slate-900">
             {editandoId ? "Editar regla de disponibilidad" : "Agregar regla de disponibilidad"}
           </h2>
-
-          <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
-            Puedes seleccionar uno o varios días para aplicar el mismo horario. Por ejemplo: lunes y jueves de 13:00 a 18:00, o lunes a viernes de 09:00 a 18:00. Al guardar, Mentalia crea una regla por cada día seleccionado con origen Mentalia.
-          </div>
 
           {editandoId && (
             <div className="mb-4 rounded-2xl bg-yellow-50 p-4 text-center text-sm font-bold text-yellow-700">
@@ -865,6 +887,13 @@ export default function DisponibilidadPage({ user, goBack }) {
               <option value="20">Descanso: 20 min</option>
               <option value="30">Descanso: 30 min</option>
             </select>
+
+            <select value={modalidad} onChange={(e) => setModalidad(e.target.value)} className="rounded-xl border px-4 py-3" aria-label="Modalidad de atención">
+              <option value="presencial">Sesión presencial</option>
+              <option value="online">Sesión online</option>
+              <option value="hibrida">Sesión híbrida</option>
+              <option value="domicilio">Sesión a domicilio</option>
+            </select>
           </div>
 
           <div className="mt-4 flex flex-col justify-center gap-3 md:flex-row">
@@ -873,7 +902,7 @@ export default function DisponibilidadPage({ user, goBack }) {
               disabled={guardando || cargandoDatos}
               className="rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white disabled:opacity-50"
             >
-              {guardando ? "Guardando en Supabase..." : editandoId ? "Actualizar regla" : "Guardar programación"}
+              {guardando ? "Guardando..." : editandoId ? "Actualizar regla" : "Guardar programación"}
             </button>
 
             {editandoId && (
@@ -934,6 +963,7 @@ export default function DisponibilidadPage({ user, goBack }) {
                       Mentalia
                     </div>
                     <p className="font-black text-slate-900">{obtenerNombreDia(item.dia_semana)}</p>
+                    <div className="mt-1"><ModalidadBadge modalidad={item.modalidad} /></div>
                     <div className="mt-1 flex flex-wrap gap-2 text-xs font-bold text-slate-600">
                       <span className="rounded-full bg-slate-100 px-2 py-1">{item.hora_inicio.slice(0, 5)} – {item.hora_fin.slice(0, 5)}</span>
                       <span className="rounded-full bg-slate-100 px-2 py-1">{item.duracion_minutos} min</span>

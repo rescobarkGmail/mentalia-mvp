@@ -406,8 +406,8 @@ export default function DisponibilidadPage({ user, goBack }) {
     mostrarModal(
       "Disponibilidad",
       editandoId
-        ? "Regla de disponibilidad actualizada correctamente en Supabase."
-        : "Regla de disponibilidad guardada correctamente en Supabase."
+      ? "Regla de disponibilidad actualizada correctamente."
+      : "Regla de disponibilidad guardada correctamente."
     );
   }
 
@@ -611,7 +611,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           <div className="grid gap-3 text-sm leading-6 text-slate-600 md:grid-cols-3">
             <div className="rounded-2xl bg-emerald-50 p-4">
               <p className="font-black text-emerald-700">1. Reglas Mentalia</p>
-              <p>Se guardan en Supabase, tabla disponibilidad_profesional. Definen los días y horarios que el profesional quiere ofrecer.</p>
+              <p>Definen los días y horarios que el profesional quiere ofrecer.</p>
             </div>
 
             <div className="rounded-2xl bg-blue-50 p-4">
@@ -632,7 +632,7 @@ export default function DisponibilidadPage({ user, goBack }) {
           </h2>
 
           <div className="mb-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
-            Esta configuración se guarda en Supabase, tabla disponibilidad_profesional. Google Calendar se consulta para descontar reuniones, atenciones u otros eventos ocupados. El resultado visible para el paciente será: disponibilidad definida por el profesional menos eventos ocupados de Google Calendar y reservas internas vigentes.
+            Google Calendar se consulta para descontar reuniones, atenciones u otros eventos ocupados. El resultado visible para el paciente será la disponibilidad definida por el profesional menos eventos ocupados y reservas internas vigentes.
           </div>
 
           {editandoId && (
@@ -704,7 +704,7 @@ export default function DisponibilidadPage({ user, goBack }) {
               className="rounded-xl bg-[#18AFC1] px-6 py-3 font-black text-white disabled:opacity-50"
             >
               {guardando
-                ? "Guardando en Supabase..."
+                ? "Guardando..."
                 : editandoId
                 ? "Actualizar regla"
                 : "Guardar regla"}
