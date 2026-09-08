@@ -311,6 +311,43 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
             )}
           </div>
 
+          <section className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <h2 className="text-xl font-black text-slate-900">
+              Datos administrativos del paciente
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Información de contacto entregada durante la reserva.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Nombre completo</p>
+                <p className="mt-1 font-bold text-slate-800">{`${paciente?.nombres || ""} ${paciente?.apellidos || ""}`.trim() || cita.patient || "Sin registro"}</p>
+              </div>
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Identificador</p>
+                <p className="mt-1 font-bold text-slate-800">{paciente?.identificador || "No informado"}</p>
+              </div>
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Correo electrónico</p>
+                <p className="mt-1 break-words font-bold text-slate-800">{paciente?.email || "No informado"}</p>
+              </div>
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Teléfono</p>
+                <p className="mt-1 font-bold text-slate-800">{paciente?.telefono || "No informado"}</p>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Primera atención</p>
+                <p className="mt-1 font-bold text-slate-800">{cita.primera_atencion === "si" ? "Sí" : cita.primera_atencion === "no" ? "No" : "No informado"}</p>
+              </div>
+              <div className="rounded-xl bg-white p-3">
+                <p className="text-xs font-black uppercase text-slate-500">Canal preferido</p>
+                <p className="mt-1 font-bold text-slate-800">{cita.canal_contacto || "No informado"}</p>
+              </div>
+            </div>
+          </section>
+
           <section className="mb-8 rounded-3xl border border-amber-200 bg-amber-50 p-5">
             <h2 className="text-xl font-black text-amber-900">
               Procesamiento efímero de audio

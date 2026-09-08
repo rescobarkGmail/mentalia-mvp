@@ -393,6 +393,19 @@ async function createPatient(req: Request, supabase: SupabaseClient, auth: AuthC
   return patient;
 }
 
+async function updatePatient(req: Request, supabase: SupabaseClient, auth: AuthContext, patientId: string) {
+  let body: Record<string, unknown>;
+  try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
+  const nombres = typeof body.nombres === "string" ? body.nombres.trim() : "";
+  const apellidos = typeof body.apellidos === "string" ? body.apellidos.trim() : "";
+  const identificador = typeof body.identificador === "string" ? body.identificador.trim() : "";
+  if (!nombres || !apellidos || !identificador) throw new HttpError(400, "INVALID_PATIENT", "Nombres, apellidos e identificador son obligatorios.");
+  const { data: patient, error } = await supabase.from("pacientes").update({ nombres, apellidos, identificador, email: typeof body.email === "string" ? body.email.trim() || null : null, telefono: typeof body.telefono === "string" ? body.telefono.trim() || null : null, fecha_nacimiento: body.fecha_nacimiento || null, genero: body.genero || null, contacto_urgencia: typeof body.contacto_urgencia === "string" ? body.contacto_urgencia.trim() || null : null, telefono_emergencia: typeof body.telefono_emergencia === "string" ? body.telefono_emergencia.trim() || null : null }).eq("id", patientId).eq("profesional_id", auth.userId).eq("activo", true).select("*").maybeSingle();
+  if (error) { console.error(JSON.stringify({ scope: "updatePatient", error: error.message, details: error.details, hint: error.hint })); if (error.code === "23505") throw new HttpError(409, "PATIENT_ALREADY_EXISTS", "Ya existe un paciente con ese identificador."); throw new HttpError(500, "PATIENT_UPDATE_FAILED", "No fue posible actualizar el paciente."); }
+  if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
+  return patient;
+}
+
 async function listOperationalAgenda(supabase: SupabaseClient, auth: AuthContext) {
   const { data, error } = await supabase.from("agenda_operativa").select(`
     *,
@@ -473,6 +486,8 @@ async function handler(req: Request): Promise<Response> {
     if (req.method === "PATCH" && path === "/v1/notification-settings") { const auth = await authenticate(req, supabase); return json(await actualizarConfiguracionNotificaciones(req, supabase, auth), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/patients") { const auth = await authenticate(req, supabase); return json(await listPatients(supabase, auth), 200, origin, id); }
     if (req.method === "POST" && path === "/v1/patients") { const auth = await authenticate(req, supabase); return json(await createPatient(req, supabase, auth), 201, origin, id); }
+    const patientMatch = path.match(/^\/v1\/patients\/([^/]+)$/);
+    if (req.method === "PATCH" && patientMatch) { const auth = await authenticate(req, supabase); return json(await updatePatient(req, supabase, auth, patientMatch[1]), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/operational-agenda") { const auth = await authenticate(req, supabase); return json(await listOperationalAgenda(supabase, auth), 200, origin, id); }
     if (req.method === "POST" && path === "/v1/operational-agenda/link") { const auth = await authenticate(req, supabase); return json(await linkOperationalAgenda(req, supabase, auth), 200, origin, id); }
     const latestSessionMatch = url.searchParams.get("patient_id");

@@ -251,6 +251,28 @@ export async function crearPacienteApi(datos) {
   return payload.data;
 }
 
+export async function actualizarPacienteApi(pacienteId, datos) {
+  const accessToken = await obtenerAccessToken();
+  const response = await fetch(`${apiUrl}/v1/patients/${encodeURIComponent(pacienteId)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(datos),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || "No fue posible actualizar el paciente.");
+    error.code = payload?.error?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
 export async function crearCita({ pacienteId, fecha, horaInicio, duracionMinutos }) {
   const accessToken = await obtenerAccessToken();
 
