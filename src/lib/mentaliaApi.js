@@ -2,6 +2,42 @@ import { supabase } from "./supabaseClient";
 
 const apiUrl = `${import.meta.env.VITE_SUPABASE_URL.replace(/\/$/, "")}/functions/v1/api-mentalia`;
 
+async function apiPublicRequest(path, options = {}) {
+  const response = await fetch(`${apiUrl}${path}`, {
+    ...options,
+    headers: {
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || "No fue posible consultar la reserva pública.");
+    error.code = payload?.error?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
+export function obtenerProfesionalPublico(slug) {
+  return apiPublicRequest(`/v1/public/professional?slug=${encodeURIComponent(slug)}`);
+}
+
+export function obtenerDisponibilidadPublica({ slug, from, to }) {
+  return apiPublicRequest(`/v1/public/availability?slug=${encodeURIComponent(slug)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+}
+
+export function buscarPacientePublico(datos) {
+  return apiPublicRequest("/v1/public/patient-lookup", { method: "POST", body: JSON.stringify(datos) });
+}
+
+export function reservarHoraPublica(datos) {
+  return apiPublicRequest("/v1/public/booking", { method: "POST", body: JSON.stringify(datos) });
+}
+
 async function obtenerAccessToken() {
   try {
     const timeout = new Promise((_, reject) => {
@@ -282,6 +318,52 @@ export async function cancelarCita(citaId) {
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.error) {
     const error = new Error(payload?.error?.message || "No fue posible cancelar la cita.");
+    error.code = payload?.error?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
+export async function confirmarCita(citaId) {
+  const accessToken = await obtenerAccessToken();
+  const response = await fetch(`${apiUrl}/v1/appointments/${encodeURIComponent(citaId)}/confirm`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+    },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || "No fue posible aceptar la reserva.");
+    error.code = payload?.error?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
+export function obtenerConfiguracionNotificaciones() {
+  return apiGet("/v1/notification-settings");
+}
+
+export async function guardarConfiguracionNotificaciones(configuracion) {
+  const accessToken = await obtenerAccessToken();
+  const response = await fetch(`${apiUrl}/v1/notification-settings`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(configuracion),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || "No fue posible guardar la configuración de notificaciones.");
     error.code = payload?.error?.code || `HTTP_${response.status}`;
     error.status = response.status;
     error.requestId = payload?.request_id;

@@ -113,17 +113,32 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
           redirectTo: window.location.origin,
+          skipBrowserRedirect: true,
         },
       });
 
       if (error) {
         setModalMessage(error.message);
         setLoading(false);
+        return;
       }
+
+      const projectRef = new URL(import.meta.env.VITE_SUPABASE_URL).hostname.split(".")[0];
+      const verifierKey = `sb-${projectRef}-auth-token-code-verifier`;
+      const verifierGuardado = Boolean(window.localStorage.getItem(verifierKey) || window.sessionStorage.getItem(verifierKey));
+      console.info("Mentalia OAuth PKCE: verificador guardado", verifierGuardado);
+
+      if (!data?.url || !verifierGuardado) {
+        setModalMessage("No se pudo preparar de forma segura el inicio de sesión. Vuelve a intentarlo.");
+        setLoading(false);
+        return;
+      }
+
+      window.location.assign(data.url);
     } catch (error) {
       console.error("Error inesperado en login Google:", error);
       setModalMessage("Ocurrió un error inesperado al iniciar sesión con Google.");

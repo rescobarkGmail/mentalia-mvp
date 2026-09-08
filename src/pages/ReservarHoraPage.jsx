@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import {
+  buscarPacientePublico,
+  obtenerDisponibilidadPublica,
+  obtenerProfesionalPublico,
+  reservarHoraPublica,
+} from "../lib/mentaliaApi";
 
 const DIAS = [
   "Lunes",
@@ -120,7 +125,7 @@ function calcularHoraFin(hora, minutos) {
   return date.toTimeString().slice(0, 5);
 }
 
-function generarSlots(horaInicio, horaFin, duracion) {
+function generarSlots(horaInicio, horaFin, duracion, descanso = 0) {
   const slots = [];
 
   const [hi, mi] = normalizarHora(horaInicio).split(":").map(Number);
@@ -144,6 +149,7 @@ function generarSlots(horaInicio, horaFin, duracion) {
   fin.setHours(hf, mf, 0, 0);
 
   let actual = new Date(inicio);
+  const descansoMinutos = Number(descanso) || 0;
 
   while (actual < fin) {
     const siguiente = new Date(actual.getTime() + Number(duracion) * 60000);
@@ -152,7 +158,7 @@ function generarSlots(horaInicio, horaFin, duracion) {
       slots.push(actual.toTimeString().slice(0, 5));
     }
 
-    actual = siguiente;
+    actual = new Date(siguiente.getTime() + descansoMinutos * 60000);
   }
 
   return slots;
@@ -363,34 +369,18 @@ export default function ReservarHoraPage({
     setError("");
 
     try {
-      let query = supabase
-        .from("v_profesionales_reserva_publica")
-        .select("*")
-        .eq("reserva_publica_activa", true);
-
       if (slugFinal) {
-        query = query.eq("slug_publico", slugFinal);
+        const data = await obtenerProfesionalPublico(slugFinal);
+        setProfesional(data);
+        setProfesionalId(data.id);
+        setSlugPublico(data.slug_publico || slugFinal);
       } else if (idFinal) {
-        query = query.eq("id", idFinal);
+        throw new Error("El enlace público debe incluir el identificador del profesional.");
       } else {
         setProfesional(null);
         setError("No se encontró el identificador público del profesional.");
         return;
       }
-
-      const { data, error: perfilError } = await query.maybeSingle();
-
-      if (perfilError) throw perfilError;
-
-      if (!data) {
-        setProfesional(null);
-        setError("El enlace de reserva no existe o no está activo.");
-        return;
-      }
-
-      setProfesional(data);
-      setProfesionalId(data.id);
-      setSlugPublico(data.slug_publico || slugFinal);
     } catch (err) {
       console.error("Error cargando perfil público:", err);
       setError(`No fue posible cargar el perfil público: ${err.message}`);
@@ -409,29 +399,9 @@ export default function ReservarHoraPage({
       const fechaInicio = semana?.[0]?.fecha;
       const fechaFin = semana?.[6]?.fecha;
 
-      const { data: disp, error: dispError } = await supabase
-        .from("v_disponibilidad_reserva_publica")
-        .select("*")
-        .eq("profesional_id", idProfesional)
-        .eq("activo", true)
-        .lte("fecha_inicio", fechaFin)
-        .gte("fecha_fin", fechaInicio)
-        .order("dia_semana", { ascending: true })
-        .order("hora_inicio", { ascending: true });
-
-      if (dispError) throw dispError;
-
-      const { data: ocupadas, error: ocupadasError } = await supabase
-        .from("v_reservas_ocupadas_publicas")
-        .select("*")
-        .eq("profesional_id", idProfesional)
-        .gte("fecha", fechaInicio)
-        .lte("fecha", fechaFin);
-
-      if (ocupadasError) throw ocupadasError;
-
-      setDisponibilidad(disp || []);
-      setReservasOcupadas(ocupadas || []);
+      const data = await obtenerDisponibilidadPublica({ slug: slugPublico || slugProp || obtenerSlugDesdeUrl(), from: fechaInicio, to: fechaFin });
+      setDisponibilidad(data?.availability || []);
+      setReservasOcupadas(data?.occupied || []);
     } catch (err) {
       console.error("Error cargando disponibilidad pública:", err);
       setError(`No fue posible cargar la disponibilidad pública: ${err.message}`);
@@ -476,7 +446,12 @@ export default function ReservarHoraPage({
         Number(profesional?.duracion_sesion_minutos) ||
         50;
 
-      const horas = generarSlots(bloque.hora_inicio, bloque.hora_fin, duracion);
+      const horas = generarSlots(
+        bloque.hora_inicio,
+        bloque.hora_fin,
+        duracion,
+        bloque.descanso_minutos
+      );
 
       horas.forEach((hora) => {
         const pasado = fechaHoraEsPasada(dia.fecha, hora);
@@ -573,20 +548,7 @@ export default function ReservarHoraPage({
         p_rut: rutConsulta,
       });
 
-      const { data, error: rpcError } = await supabase.rpc(
-        "buscar_paciente_publico_por_rut",
-        {
-          p_slug_publico: slugPublico,
-          p_rut: rutConsulta,
-        }
-      );
-
-      console.log("Respuesta buscar_paciente_publico_por_rut:", {
-        data,
-        rpcError,
-      });
-
-      if (rpcError) throw rpcError;
+      const data = await buscarPacientePublico({ slug_publico: slugPublico, rut: rutConsulta });
 
       if (rutActualRef.current !== rutConsulta) {
         console.warn("Se descartó respuesta de RUT antiguo:", {
@@ -717,25 +679,20 @@ export default function ReservarHoraPage({
     const telefonoNormalizado = normalizarTelefonoChileno(telefono);
 
     try {
-      const { data, error: reservaError } = await supabase.rpc(
-        "reservar_hora_publica",
-        {
-          p_slug_publico: slugPublico,
-          p_fecha: slotSeleccionado.fecha,
-          p_hora_inicio: slotSeleccionado.hora,
-          p_hora_fin: slotSeleccionado.hora_fin,
-          p_nombres: normalizarTexto(nombres),
-          p_apellidos: normalizarTexto(apellidos),
-          p_email: normalizarTexto(email).toLowerCase(),
-          p_telefono: telefonoNormalizado,
-          p_identificador: rutFormateado,
-          p_primera_atencion: primeraAtencion || null,
-          p_canal_contacto: canalContacto,
-          p_modalidad: modalidadReserva,
-        }
-      );
-
-      if (reservaError) throw reservaError;
+      const data = await reservarHoraPublica({
+        slug_publico: slugPublico,
+        fecha: slotSeleccionado.fecha,
+        hora_inicio: slotSeleccionado.hora,
+        hora_fin: slotSeleccionado.hora_fin,
+        nombres: normalizarTexto(nombres),
+        apellidos: normalizarTexto(apellidos),
+        email: normalizarTexto(email).toLowerCase(),
+        telefono: telefonoNormalizado,
+        identificador: rutFormateado,
+        primera_atencion: primeraAtencion || null,
+        canal_contacto: canalContacto,
+        modalidad: modalidadReserva,
+      });
 
       const resultado = Array.isArray(data) ? data[0] : data;
 

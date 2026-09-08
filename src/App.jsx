@@ -168,7 +168,19 @@ export default function App() {
 
   useEffect(() => {
     async function recuperarSesionInicial() {
+      // Supabase procesa automáticamente el callback PKCE y espera a que la
+      // sesión quede disponible antes de resolver getSession().
+      const inicializacion = await supabase.auth.initialize();
       const { data, error } = await supabase.auth.getSession();
+
+      // OAuth puede regresar temporalmente con tokens en el fragmento/hash.
+      // La sesión ya fue procesada por Supabase; se elimina de la barra de
+      // direcciones para no exponer credenciales en historial, capturas o logs.
+      if (typeof window !== "undefined" && /(?:^|#|&)access_token=|(?:^|#|&)refresh_token=|(?:^|#|&)provider_token=/.test(window.location.hash)) {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.hash = "";
+        window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+      }
 
       if (error) {
         console.error("Error recuperando sesión:", error);
@@ -177,22 +189,32 @@ export default function App() {
         return;
       }
 
+      if (inicializacion?.error) {
+        console.error("Error procesando el callback de autenticación:", inicializacion.error);
+      }
+
       const session = data?.session;
 
       if (!session?.user) {
         setIsLoggedIn(false);
-        setView("landing");
+        const hayCallbackOAuth =
+          typeof window !== "undefined" &&
+          Boolean(new URL(window.location.href).searchParams.get("code"));
+        if (hayCallbackOAuth) {
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete("code");
+          window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+        }
+        setView(hayCallbackOAuth ? "login" : "landing");
         return;
       }
 
       await aplicarSesion(session.user, "Google", { redirigir: true });
     }
 
-    recuperarSesionInicial();
-
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       console.log("App - onAuthStateChange:", event);
 
       if (!session?.user) {
@@ -210,22 +232,36 @@ export default function App() {
         return;
       }
 
+      // Supabase ejecuta este callback mientras mantiene su bloqueo interno de
+      // autenticación. No esperamos aquí consultas adicionales (por ejemplo,
+      // obtenerPerfilProfesional), porque esas consultas necesitan leer la
+      // sesión y podrían quedar esperando el mismo bloqueo.
+      const diferirAplicacionSesion = (redirigir) => {
+        setTimeout(() => {
+          aplicarSesion(session.user, "Google", { redirigir }).catch((error) => {
+            console.error("Error aplicando sesión autenticada:", error);
+          });
+        }, 0);
+      };
+
       if (event === "SIGNED_IN") {
-        await aplicarSesion(session.user, "Google", { redirigir: true });
+        diferirAplicacionSesion(true);
         return;
       }
 
       if (event === "INITIAL_SESSION") {
         if (!isLoggedInRef.current) {
-          await aplicarSesion(session.user, "Google", { redirigir: true });
+          diferirAplicacionSesion(true);
         }
         return;
       }
 
       // Para eventos como TOKEN_REFRESHED o USER_UPDATED no cambiamos la vista.
       // Solo refrescamos user/profile sin mandar al dashboard.
-      await aplicarSesion(session.user, "Google", { redirigir: false });
+      diferirAplicacionSesion(false);
     });
+
+    recuperarSesionInicial();
 
     return () => {
       subscription.unsubscribe();
@@ -283,7 +319,7 @@ export default function App() {
     return (
       <ReservarHoraPage
         modoPublico={true}
-        slugProfesional={reservaPublica.slugProfesional}
+        slug={reservaPublica.slugProfesional}
         profesionalId={reservaPublica.profesionalId}
       />
     );

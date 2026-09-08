@@ -9,4 +9,48 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const authStorage = typeof window !== "undefined"
+  ? {
+      getItem(key) {
+        try {
+          return window.localStorage.getItem(key) ?? window.sessionStorage.getItem(key);
+        } catch {
+          return window.sessionStorage.getItem(key);
+        }
+      },
+      setItem(key, value) {
+        try {
+          window.localStorage.setItem(key, value);
+        } catch {
+          // sessionStorage mantiene el flujo OAuth si localStorage está bloqueado.
+        }
+        try {
+          window.sessionStorage.setItem(key, value);
+        } catch {
+          // El cliente reportará el error de autenticación si ningún storage está disponible.
+        }
+      },
+      removeItem(key) {
+        try {
+          window.localStorage.removeItem(key);
+        } catch {
+          // Continúa con sessionStorage.
+        }
+        try {
+          window.sessionStorage.removeItem(key);
+        } catch {
+          // No hay nada más que limpiar.
+        }
+      },
+    }
+  : undefined;
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    flowType: "pkce",
+    detectSessionInUrl: true,
+    persistSession: true,
+    autoRefreshToken: true,
+    storage: authStorage,
+  },
+});

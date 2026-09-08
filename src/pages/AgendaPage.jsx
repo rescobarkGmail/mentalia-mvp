@@ -8,6 +8,7 @@ import {
 } from "../lib/googleCalendarClient";
 import {
   cancelarCita as cancelarCitaApi,
+  confirmarCita as confirmarCitaApi,
   obtenerCitas,
   obtenerDisponibilidad,
   obtenerAgendaOperativa,
@@ -80,6 +81,7 @@ function StatusBadge({ status }) {
     reservada: "bg-slate-700 text-white",
     confirmada: "bg-slate-700 text-white",
     pendiente: "bg-yellow-100 text-yellow-700",
+    pendiente_confirmacion: "bg-yellow-100 text-yellow-700",
     cancelada: "bg-red-100 text-red-700",
     reprogramada: "bg-blue-100 text-blue-700",
     pendiente_vinculacion: "bg-amber-100 text-amber-700",
@@ -165,6 +167,7 @@ export default function AgendaPage({
   const [disponibilidad, setDisponibilidad] = useState([]);
   const [semanaBase, setSemanaBase] = useState(inicioSemana(new Date()));
   const [citaEditando, setCitaEditando] = useState(null);
+  const [citaConfirmando, setCitaConfirmando] = useState(null);
   const [nuevaFecha, setNuevaFecha] = useState("");
   const [nuevaHora, setNuevaHora] = useState("");
   const [cargando, setCargando] = useState(false);
@@ -687,6 +690,22 @@ export default function AgendaPage({
     }
   }
 
+  async function confirmarCita(cita) {
+    if (!cita) return;
+    try {
+      const actualizada = await confirmarCitaApi(cita.id);
+      setCitas((prev) => prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item));
+      if (actualizada?.notification_status === "enviado") alert("Reserva aceptada y correo enviado al paciente.");
+      else if (actualizada?.notification_status === "sin_correo") alert("Reserva aceptada. El paciente no tiene un correo registrado.");
+      else if (actualizada?.notification_status === "fallido") alert("Reserva aceptada, pero no fue posible enviar el correo.");
+    } catch (error) {
+      if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
+      else alert(error.message || "No fue posible aceptar la reserva.");
+    } finally {
+      setCitaConfirmando(null);
+    }
+  }
+
   async function guardarReagenda() {
     if (!citaEditando || !nuevaFecha || !nuevaHora) {
       alert("Selecciona fecha y hora.");
@@ -834,6 +853,15 @@ export default function AgendaPage({
           {cita.origen || "Mentalia"}
         </p>
 
+        {cita.estado === "pendiente_confirmacion" && (
+          <button
+            onClick={() => setCitaConfirmando(cita)}
+            className="mt-3 w-full rounded-xl bg-emerald-600 px-3 py-2 text-sm font-black text-white hover:bg-emerald-700"
+          >
+            Aceptar reserva
+          </button>
+        )}
+
         <button
           onClick={() => abrirFlujo(cita)}
           className="mt-3 w-full rounded-xl bg-[#18AFC1] px-3 py-2 text-sm font-black text-white hover:bg-cyan-700"
@@ -879,6 +907,10 @@ export default function AgendaPage({
   }
 
   function cambiarSemanaAgenda(cantidad) { if (timelineRef.current) scrollPreservadoRef.current = timelineRef.current.scrollTop; setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidad))); }
+
+  function accionAceptarReserva(cita) {
+    return cita?.estado === "pendiente_confirmacion" ? <button type="button" onClick={() => confirmarCita(cita)} className="mt-1 w-full rounded bg-emerald-600 px-1 py-1 text-[9px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button> : null;
+  }
 
   function renderHorarioAgendaConModalidad() {
     const horas = Array.from({ length: 24 }, (_, i) => i);
@@ -1053,6 +1085,12 @@ export default function AgendaPage({
             ) : (
               <>
                 {renderHorarioAgendaConModalidad()}
+                {citas.filter((cita) => cita.estado === "pendiente_confirmacion").map((cita) => (
+                  <div key={`accion-${cita.id}`} className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm">
+                    <span className="font-bold text-yellow-800">Reserva pendiente: {`${cita.pacientes?.nombres || "Paciente"} ${cita.pacientes?.apellidos || ""}`.trim()} · {cita.hora_inicio?.slice(0, 5)}</span>
+                    <button type="button" onClick={() => setCitaConfirmando(cita)} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-black text-white hover:bg-emerald-700">Aceptar reserva</button>
+                  </div>
+                ))}
               <div className="hidden grid gap-4 md:grid-cols-7">
                 {diasSemana.map((fechaObj) => {
                   const fecha = fechaTexto(fechaObj);
@@ -1105,6 +1143,23 @@ export default function AgendaPage({
           </section>
         )}
       </div>
+
+      {citaConfirmando && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <p className="text-xs font-black uppercase tracking-wide text-emerald-600">Aceptar reserva</p>
+            <h2 className="mt-1 text-xl font-black text-slate-900">¿Confirmar esta reserva?</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">El paciente quedará con la hora aceptada.</p>
+            <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">
+              {`${citaConfirmando.pacientes?.nombres || "Paciente"} ${citaConfirmando.pacientes?.apellidos || ""}`.trim()} · {citaConfirmando.fecha?.slice(0, 10)} · {citaConfirmando.hora_inicio?.slice(0, 5)}
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button type="button" onClick={() => setCitaConfirmando(null)} className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-bold text-slate-700 hover:bg-slate-50">Cancelar</button>
+              <button type="button" onClick={() => confirmarCita(citaConfirmando)} className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 font-black text-white hover:bg-emerald-700">Aceptar reserva</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {citaEditando && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
