@@ -39,7 +39,11 @@ const CONFIGURACION_NOTIFICACIONES_INICIAL = {
   horas_antes_recordatorio_email: 27,
   minutos_antes_recordatorio_whatsapp: 60,
   zona_horaria: "America/Santiago",
+  confirmacion_reserva_email_asunto: "Reserva confirmada con FluyePro",
+  confirmacion_reserva_email_plantilla: "Hola {{nombre_paciente}},\n\nTu reserva con {{nombre_profesional}} fue confirmada.\n\nFecha: {{fecha}}\nHora: {{hora_inicio}} - {{hora_fin}}\nModalidad: {{modalidad}}\n\nInformación de pago\nEl pago aún no está habilitado. Esta sección es informativa y no se realizará ningún cobro.\n\nSaludos,\nFluyePro",
 };
+
+const MOSTRAR_PLANTILLA_CORREO = false;
 
 function Interruptor({ checked, onChange, label }) {
   return (
@@ -415,13 +419,12 @@ export default function ConfiguracionPage({ user, goBack }) {
               </div>
             </div>
             <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
-              Configuración inicial
+               Preferencias
             </span>
           </div>
 
           <div className="mt-5 rounded-2xl border border-cyan-100 bg-cyan-50 p-4 text-sm leading-6 text-cyan-900">
-            En este paso solo dejamos configuradas tus preferencias. Los envíos de correo y WhatsApp se habilitarán en los pasos siguientes.
-            No se enviará ningún mensaje mientras no exista un proveedor conectado.
+             Configura los avisos que recibirá el paciente y personaliza el correo de reserva aceptada. WhatsApp queda preparado para una integración posterior.
           </div>
 
           {cargandoNotificaciones ? (
@@ -439,7 +442,7 @@ export default function ConfiguracionPage({ user, goBack }) {
                   </div>
                 </div>
 
-                <div className="space-y-3">
+               <div className="space-y-3">
                   <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 px-3 py-3">
                     <div>
                       <p className="font-bold text-slate-800">Reserva aceptada</p>
@@ -486,10 +489,11 @@ export default function ConfiguracionPage({ user, goBack }) {
                         onChange={(valor) => cambiarNotificacion("recordatorio_email_activo", valor)}
                         label="Recordatorio de cita por correo"
                       />
-                    </div>
-                  </div>
-                </div>
-              </div>
+                 </div>
+               </div>
+
+             </div>
+             </div>
 
               <div className="rounded-2xl border border-slate-200 p-4">
                 <div className="mb-4 flex items-center gap-3">

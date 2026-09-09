@@ -294,6 +294,8 @@ Tu tarea es estructurar una transcripción de sesión psicológica en un borrado
 Devuelve únicamente JSON válido con esta estructura:
 
 {
+  "motivo_consulta": "",
+  "notas_clinicas": "",
   "resumen_sesion": "",
   "foco_trabajado": "",
   "observaciones": "",
@@ -350,6 +352,8 @@ ${transcripcion}
       clinicalJson = JSON.parse(content);
     } catch {
       clinicalJson = {
+        motivo_consulta: "",
+        notas_clinicas: "",
         resumen_sesion: content,
         foco_trabajado: "",
         observaciones: "",

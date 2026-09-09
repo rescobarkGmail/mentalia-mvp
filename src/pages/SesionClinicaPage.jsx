@@ -7,6 +7,7 @@ import {
 import {
   guardarSesionClinica,
   obtenerSesionClinicaPorCita,
+  obtenerConsentimientosPaciente,
 } from "../lib/mentaliaApi";
 
 export default function SesionClinicaPage({ user, cita, goBack }) {
@@ -28,6 +29,8 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   const [procesandoAudio, setProcesandoAudio] = useState(false);
   const [transcripcion, setTranscripcion] = useState("");
   const [mensajeOperacion, setMensajeOperacion] = useState(null);
+  const [consentimientos, setConsentimientos] = useState([]);
+  const [tipoAudio, setTipoAudio] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -37,7 +40,19 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     cargarConfiguracion();
     cargarPaciente();
     cargarSesion();
+    cargarConsentimientos();
   }, []);
+
+  async function cargarConsentimientos() {
+    const pacienteId = cita.paciente_id || cita.paciente?.id || cita.pacientes?.id;
+    if (!pacienteId) return;
+    try { setConsentimientos(await obtenerConsentimientosPaciente(pacienteId)); }
+    catch (error) { setMensajeOperacion({ tipo: "error", texto: error.message || "No fue posible validar los consentimientos." }); }
+  }
+
+  const consentimientoGrabacion = consentimientos.find((item) => item.codigo === "grabacion_audio")?.estado === "aceptado";
+  const consentimientoTranscripcion = consentimientos.find((item) => item.codigo === "transcripcion_ia")?.estado === "aceptado";
+  const puedeGrabarSesion = consentimientoGrabacion && consentimientoTranscripcion;
 
   async function cargarConfiguracion() {
     const { data } = await supabase
@@ -79,11 +94,16 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     setProximaSesion(data.proxima_sesion || "");
   }
 
-  async function iniciarGrabacion() {
+  async function iniciarGrabacion(esDictadoProfesional = false) {
+    if (!esDictadoProfesional && !puedeGrabarSesion) {
+      setMensajeOperacion({ tipo: "error", texto: "El paciente no ha autorizado la grabación y transcripción de esta atención." });
+      return;
+    }
     try {
       setAudioBlob(null);
       setAudioUrl("");
       setTranscripcion("");
+      setTipoAudio(esDictadoProfesional ? "dictado_profesional" : "conversacion_paciente");
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -132,6 +152,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     setAudioBlob(null);
     setAudioUrl("");
     setTranscripcion("");
+    setTipoAudio(null);
     audioChunksRef.current = [];
 
     if (streamRef.current) {
@@ -164,11 +185,9 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
 
       setTranscripcion(data.transcripcion || "");
 
-      setNotasClinicas((prev) =>
-        prev
-          ? `${prev}\n\nTranscripción:\n${data.transcripcion || ""}`
-          : data.transcripcion || ""
-      );
+      if (data.motivo_consulta) setMotivoConsulta(data.motivo_consulta);
+      const bloqueTranscripcion = `Transcripción profesional:\n${data.transcripcion || ""}`;
+      setNotasClinicas((prev) => prev ? `${prev}\n\n${bloqueTranscripcion}` : bloqueTranscripcion);
 
       setResumenSesion(data.resumen_sesion || "");
       setFocoTrabajado(data.foco_trabajado || "");
@@ -357,13 +376,18 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
               El audio se procesa temporalmente y no se almacena.
             </p>
 
+            <div className={`mt-3 rounded-xl p-3 text-sm ${puedeGrabarSesion ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"}`}>
+              {puedeGrabarSesion ? "Consentimiento vigente para grabar y transcribir la conversación." : "Grabación de la conversación bloqueada: faltan consentimientos del paciente."}
+            </div>
+
             <div className="mt-5 flex flex-col gap-3 md:flex-row">
               {!grabando ? (
                 <button
-                  onClick={iniciarGrabacion}
-                  className="flex-1 rounded-2xl bg-red-600 px-6 py-4 font-black text-white"
+                  onClick={() => iniciarGrabacion(false)}
+                  disabled={!puedeGrabarSesion}
+                  className="flex-1 rounded-2xl bg-red-600 px-6 py-4 font-black text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  🎙 Iniciar grabación
+                  🎙 Grabar conversación autorizada
                 </button>
               ) : (
                 <button
@@ -394,7 +418,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
             {audioUrl && (
               <div className="mt-5 rounded-2xl bg-white p-4">
                 <p className="mb-2 text-sm font-black text-slate-700">
-                  Audio capturado temporalmente
+                  {tipoAudio === "dictado_profesional" ? "Resumen privado capturado temporalmente" : "Conversación capturada temporalmente"}
                 </p>
                 <audio controls src={audioUrl} className="w-full" />
               </div>
@@ -411,6 +435,8 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
               </div>
             )}
           </section>
+
+          {!grabando && <div className="mb-8"><button type="button" onClick={() => iniciarGrabacion(true)} className="w-full rounded-2xl border border-cyan-300 bg-white px-6 py-3 font-black text-cyan-800 hover:bg-cyan-50">🎤 Grabar resumen privado del profesional</button><p className="mt-2 text-xs text-amber-800">Este modo no graba la conversación. El profesional dicta un resumen para que la IA complete los campos clínicos.</p></div>}
 
           <section className="space-y-5">
             <h2 className="text-xl font-black text-slate-800">
@@ -513,6 +539,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
               </h2>
               <p className="mt-3 text-sm text-slate-600">{mensajeOperacion.texto}</p>
             </div>
+
             <button
               onClick={() => {
                 const volver = mensajeOperacion.volver;

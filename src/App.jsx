@@ -16,6 +16,7 @@ import ReservarHoraPage from "./pages/ReservarHoraPage";
 import SesionClinicaPage from "./pages/SesionClinicaPage";
 import FichaClinicaPage from "./pages/FichaClinicaPage";
 import ConfiguracionPage from "./pages/ConfiguracionPage";
+import ConsentimientoPublicoPage from "./pages/ConsentimientoPublicoPage";
 
 
 function obtenerReservaPublicaDesdeUrl() {
@@ -53,6 +54,9 @@ function obtenerReservaPublicaDesdeUrl() {
 
 export default function App() {
   const reservaPublica = obtenerReservaPublicaDesdeUrl();
+  const urlActual = typeof window !== "undefined" ? new URL(window.location.href) : null;
+  const partesUrl = urlActual?.pathname.split("/").filter(Boolean) || [];
+  const tokenConsentimiento = partesUrl[0] === "consentimiento" ? partesUrl[1] : urlActual?.searchParams.get("token");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [provider, setProvider] = useState("Google");
   const [view, setView] = useState("landing");
@@ -323,6 +327,10 @@ export default function App() {
         profesionalId={reservaPublica.profesionalId}
       />
     );
+  }
+
+  if (tokenConsentimiento) {
+    return <ConsentimientoPublicoPage token={tokenConsentimiento} />;
   }
 
   if (view === "landing") {

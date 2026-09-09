@@ -38,6 +38,14 @@ export function reservarHoraPublica(datos) {
   return apiPublicRequest("/v1/public/booking", { method: "POST", body: JSON.stringify(datos) });
 }
 
+export function obtenerSolicitudConsentimientoPublica(token) {
+  return apiPublicRequest(`/v1/public/consents/${encodeURIComponent(token)}`);
+}
+
+export function responderSolicitudConsentimientoPublica(token, respuestas) {
+  return apiPublicRequest(`/v1/public/consents/${encodeURIComponent(token)}`, { method: "POST", body: JSON.stringify({ respuestas }) });
+}
+
 async function obtenerAccessToken() {
   try {
     const timeout = new Promise((_, reject) => {
@@ -265,6 +273,31 @@ export async function actualizarPacienteApi(pacienteId, datos) {
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.error) {
     const error = new Error(payload?.error?.message || "No fue posible actualizar el paciente.");
+    error.code = payload?.error?.code || `HTTP_${response.status}`;
+    error.status = response.status;
+    error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
+export function obtenerConsentimientosPaciente(pacienteId) {
+  return apiGet(`/v1/patients/${encodeURIComponent(pacienteId)}/consents`);
+}
+
+export async function solicitarConsentimientosPaciente(pacienteId) {
+  const accessToken = await obtenerAccessToken();
+  const response = await fetch(`${apiUrl}/v1/patients/${encodeURIComponent(pacienteId)}/consents/request`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error) {
+    const error = new Error(payload?.error?.message || "No fue posible preparar la solicitud de consentimientos.");
     error.code = payload?.error?.code || `HTTP_${response.status}`;
     error.status = response.status;
     error.requestId = payload?.request_id;

@@ -13,6 +13,20 @@ create table if not exists public.notificaciones_config (
   horas_antes_recordatorio_email integer not null default 27,
   minutos_antes_recordatorio_whatsapp integer not null default 60,
   zona_horaria text not null default 'America/Santiago',
+  confirmacion_reserva_email_asunto text not null default 'Reserva confirmada con FluyePro',
+  confirmacion_reserva_email_plantilla text not null default 'Hola {{nombre_paciente}},
+
+Tu reserva con {{nombre_profesional}} fue confirmada.
+
+Fecha: {{fecha}}
+Hora: {{hora_inicio}} - {{hora_fin}}
+Modalidad: {{modalidad}}
+
+Información de pago
+El pago aún no está habilitado. Esta sección es informativa y no se realizará ningún cobro.
+
+Saludos,
+FluyePro',
   fecha_crea timestamptz not null default now(),
   fecha_actualiza timestamptz not null default now(),
   constraint notificaciones_config_profesional_unique unique (profesional_id),

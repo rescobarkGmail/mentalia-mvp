@@ -26,6 +26,7 @@ function localSantiago() { const parts = new Intl.DateTimeFormat("en-CA", { time
 function publicSupabaseClient() { const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_ANON_KEY"); return createClient(Deno.env.get("SUPABASE_URL")!, key!); }
 
 function publicSlug(value: unknown) { const slug = typeof value === "string" ? value.trim().toLowerCase() : ""; if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new HttpError(400, "INVALID_PUBLIC_SLUG", "El enlace público no es válido."); return slug; }
+async function hashToken(token: string) { const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)); return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join(""); }
 
 async function getPublicProfessional(supabase: SupabaseClient, slugValue: unknown) {
   const slug = publicSlug(slugValue);
@@ -144,9 +145,10 @@ async function rescheduleAppointment(req: Request, supabase: SupabaseClient, aut
   const overlaps = (existing ?? []).some((item) => isTime(item.hora_inicio) && isTime(item.hora_fin) && minutes(horaInicio) < minutes(item.hora_fin) && minutes(horaFin) > minutes(item.hora_inicio));
   if (overlaps) throw new HttpError(409, "SLOT_ALREADY_BOOKED", "Ese horario se superpone con una cita existente.");
 
-  const { data: appointment, error: updateError } = await supabase.from("citas").update({ fecha, hora_inicio: horaInicio, hora_fin: horaFin, estado: "reprogramada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*").single();
+  const { data: appointment, error: updateError } = await supabase.from("citas").update({ fecha, hora_inicio: horaInicio, hora_fin: horaFin, estado: "reprogramada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, email, telefono)").single();
   if (updateError) throw new HttpError(500, "APPOINTMENT_RESCHEDULE_FAILED", "No fue posible reprogramar la cita.");
-  return appointment;
+  const notificationStatus = await enviarCorreoCambioReserva(appointment, auth, supabase, "reprogramada");
+  return { ...appointment, notification_status: notificationStatus };
 }
 
 async function cancelAppointment(supabase: SupabaseClient, auth: AuthContext, appointmentId: string) {
@@ -155,13 +157,18 @@ async function cancelAppointment(supabase: SupabaseClient, auth: AuthContext, ap
   if (currentError) throw new HttpError(500, "APPOINTMENT_LOOKUP_FAILED", "No fue posible consultar la cita.");
   if (!current) throw new HttpError(404, "APPOINTMENT_NOT_FOUND", "La cita no existe o no pertenece al profesional autenticado.");
   if (current.estado === "cancelada") return current;
-  const { data: appointment, error: updateError } = await supabase.from("citas").update({ estado: "cancelada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*").single();
+  const { data: appointment, error: updateError } = await supabase.from("citas").update({ estado: "cancelada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, email, telefono)").single();
   if (updateError) throw new HttpError(500, "APPOINTMENT_CANCEL_FAILED", "No fue posible cancelar la cita.");
-  return appointment;
+  const notificationStatus = await enviarCorreoCambioReserva(appointment, auth, supabase, "cancelada");
+  return { ...appointment, notification_status: notificationStatus };
 }
 
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] ?? character));
+}
+
+function aplicarPlantillaCorreo(template: string, values: Record<string, string>) {
+  return template.replace(/{{\s*([a-z_]+)\s*}}/gi, (_, key) => values[key.toLowerCase()] ?? "");
 }
 
 async function enviarCorreoConfirmacionReserva(appointment: Record<string, any>, auth: AuthContext, supabase: SupabaseClient) {
@@ -177,12 +184,38 @@ async function enviarCorreoConfirmacionReserva(appointment: Record<string, any>,
   const name = `${patient?.nombres || ""} ${patient?.apellidos || ""}`.trim() || "Paciente";
   const from = Deno.env.get("EMAIL_FROM") || "FluyePro <contacto@fluyepro.cl>";
   const professionalName = `${auth.profile?.nombres || ""} ${auth.profile?.apellidos || ""}`.trim() || "tu profesional";
-  const html = `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6"><h2>Reserva confirmada</h2><p>Hola ${escapeHtml(name)},</p><p>Tu reserva con <strong>${escapeHtml(professionalName)}</strong> fue confirmada.</p><p><strong>Fecha:</strong> ${escapeHtml(dateLabel)}<br><strong>Hora:</strong> ${escapeHtml(String(appointment.hora_inicio || "").slice(0, 5))} - ${escapeHtml(String(appointment.hora_fin || "").slice(0, 5))}<br><strong>Modalidad:</strong> ${escapeHtml(appointment.modalidad || "presencial")}</p><p><strong>Información de pago</strong><br>El pago aún no está habilitado. Esta sección es informativa y no se realizará ningún cobro.</p><p>Saludos,<br>FluyePro</p></div>`;
+  const values = { nombre_paciente: name, nombre_profesional: professionalName, fecha: String(dateLabel ?? ""), hora_inicio: String(appointment.hora_inicio || "").slice(0, 5), hora_fin: String(appointment.hora_fin || "").slice(0, 5), modalidad: String(appointment.modalidad || "presencial") };
+  const subject = aplicarPlantillaCorreo(String(settings?.confirmacion_reserva_email_asunto || notificationDefaults.confirmacion_reserva_email_asunto), values).trim() || notificationDefaults.confirmacion_reserva_email_asunto;
+  const message = aplicarPlantillaCorreo(String(settings?.confirmacion_reserva_email_plantilla || notificationDefaults.confirmacion_reserva_email_plantilla), values);
+  const html = `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6">${escapeHtml(message).replace(/\r?\n/g, "<br>")}</div>`;
   try {
-    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [email], reply_to: "contacto@fluyepro.cl", subject: "Reserva confirmada con FluyePro", html }) });
+    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [email], reply_to: "contacto@fluyepro.cl", subject, html }) });
     if (!response.ok) { const detail = await response.text(); console.error(JSON.stringify({ scope: "sendConfirmationEmail.resend", status: response.status, detail })); return "fallido"; }
     return "enviado";
   } catch (error) { console.error(JSON.stringify({ scope: "sendConfirmationEmail.network", error: error instanceof Error ? error.message : String(error) })); return "fallido"; }
+}
+
+async function enviarCorreoCambioReserva(appointment: Record<string, any>, auth: AuthContext, supabase: SupabaseClient, cambio: "reprogramada" | "cancelada") {
+  const patient = appointment.pacientes;
+  const email = typeof patient?.email === "string" ? patient.email.trim() : "";
+  if (!email) return "sin_correo";
+  const { data: settings } = await supabase.from("notificaciones_config").select("cambios_reserva_email").eq("profesional_id", auth.userId).maybeSingle();
+  if (settings?.cambios_reserva_email === false) return "desactivado";
+  const apiKey = Deno.env.get("RESEND_API_KEY");
+  if (!apiKey) return "no_configurado";
+  const professionalName = `${auth.profile?.nombres || ""} ${auth.profile?.apellidos || ""}`.trim() || "tu profesional";
+  const name = `${patient?.nombres || ""} ${patient?.apellidos || ""}`.trim() || "Paciente";
+  const dateLabel = isDate(appointment.fecha) ? new Intl.DateTimeFormat("es-CL", { dateStyle: "long", timeZone: "America/Santiago" }).format(new Date(`${appointment.fecha}T12:00:00-04:00`)) : appointment.fecha;
+  const cancelled = cambio === "cancelada";
+  const subject = cancelled ? "Cambio en tu reserva con FluyePro" : "Tu reserva fue reagendada por FluyePro";
+  const message = cancelled
+    ? `Hola ${name},\n\nTu reserva con ${professionalName} fue cancelada. Si deseas coordinar una nueva hora, contacta al profesional.\n\nSaludos,\nFluyePro`
+    : `Hola ${name},\n\nTu reserva con ${professionalName} fue reagendada.\n\nNueva fecha: ${dateLabel}\nNueva hora: ${String(appointment.hora_inicio || "").slice(0, 5)} - ${String(appointment.hora_fin || "").slice(0, 5)}\n\nSaludos,\nFluyePro`;
+  const from = Deno.env.get("EMAIL_FROM") || "FluyePro <contacto@fluyepro.cl>";
+  try {
+    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [email], reply_to: "contacto@fluyepro.cl", subject, html: `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6">${escapeHtml(message).replace(/\r?\n/g, "<br>")}</div>` }) });
+    return response.ok ? "enviado" : "fallido";
+  } catch { return "fallido"; }
 }
 
 async function confirmAppointment(supabase: SupabaseClient, auth: AuthContext, appointmentId: string) {
@@ -224,6 +257,8 @@ const notificationSettingKeys = [
   "horas_antes_recordatorio_email",
   "minutos_antes_recordatorio_whatsapp",
   "zona_horaria",
+  "confirmacion_reserva_email_asunto",
+  "confirmacion_reserva_email_plantilla",
 ] as const;
 
 const notificationDefaults = {
@@ -236,6 +271,8 @@ const notificationDefaults = {
   horas_antes_recordatorio_email: 27,
   minutos_antes_recordatorio_whatsapp: 60,
   zona_horaria: "America/Santiago",
+  confirmacion_reserva_email_asunto: "Reserva confirmada con FluyePro",
+  confirmacion_reserva_email_plantilla: "Hola {{nombre_paciente}},\n\nTu reserva con {{nombre_profesional}} fue confirmada.\n\nFecha: {{fecha}}\nHora: {{hora_inicio}} - {{hora_fin}}\nModalidad: {{modalidad}}\n\nInformación de pago\nEl pago aún no está habilitado. Esta sección es informativa y no se realizará ningún cobro.\n\nSaludos,\nFluyePro",
 };
 
 function normalizarConfiguracionNotificaciones(data: Record<string, unknown> | null | undefined) {
@@ -269,6 +306,12 @@ function validarConfiguracionNotificaciones(data: Record<string, unknown>) {
   const horas = Number(data.horas_antes_recordatorio_email ?? notificationDefaults.horas_antes_recordatorio_email);
   const minutos = Number(data.minutos_antes_recordatorio_whatsapp ?? notificationDefaults.minutos_antes_recordatorio_whatsapp);
   const zonaHoraria = typeof data.zona_horaria === "string" && data.zona_horaria.trim() ? data.zona_horaria.trim() : notificationDefaults.zona_horaria;
+  const asunto = typeof data.confirmacion_reserva_email_asunto === "string" && data.confirmacion_reserva_email_asunto.trim()
+    ? data.confirmacion_reserva_email_asunto.trim().slice(0, 180)
+    : notificationDefaults.confirmacion_reserva_email_asunto;
+  const plantilla = typeof data.confirmacion_reserva_email_plantilla === "string" && data.confirmacion_reserva_email_plantilla.trim()
+    ? data.confirmacion_reserva_email_plantilla.trim().slice(0, 5000)
+    : notificationDefaults.confirmacion_reserva_email_plantilla;
 
   if (!Number.isInteger(horas) || horas < 1 || horas > 168 || !Number.isInteger(minutos) || minutos < 5 || minutos > 1440) {
     throw new HttpError(400, "INVALID_NOTIFICATION_SETTINGS", "Los tiempos de recordatorio no tienen un valor válido.");
@@ -280,6 +323,8 @@ function validarConfiguracionNotificaciones(data: Record<string, unknown>) {
     horas_antes_recordatorio_email: horas,
     minutos_antes_recordatorio_whatsapp: minutos,
     zona_horaria: zonaHoraria,
+    confirmacion_reserva_email_asunto: asunto,
+    confirmacion_reserva_email_plantilla: plantilla,
   };
 }
 
@@ -406,6 +451,85 @@ async function updatePatient(req: Request, supabase: SupabaseClient, auth: AuthC
   return patient;
 }
 
+async function listPatientConsents(supabase: SupabaseClient, auth: AuthContext, patientId: string) {
+  if (!patientId) throw new HttpError(400, "INVALID_PATIENT_ID", "Falta el identificador del paciente.");
+  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
+  if (patientError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible validar el paciente.");
+  if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
+  const { data, error } = await supabase.from("consentimientos_paciente").select("id,paciente_id,codigo,estado,version,texto_snapshot,solicitud_id,otorgado_en,revocado_en,respondido_en,canal,fecha_crea,fecha_actualiza,consentimiento_tipos(codigo,titulo,descripcion,opcional,activo)").eq("profesional_id", auth.userId).eq("paciente_id", patientId).order("codigo");
+  if (error) throw new HttpError(500, "CONSENTS_LOOKUP_FAILED", "No fue posible cargar los consentimientos del paciente.");
+  return data ?? [];
+}
+
+async function requestPatientConsents(supabase: SupabaseClient, auth: AuthContext, patientId: string) {
+  if (!patientId) throw new HttpError(400, "INVALID_PATIENT_ID", "Falta el identificador del paciente.");
+  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
+  if (patientError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible validar el paciente.");
+  if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
+  const [{ data: types, error: typesError }, { data: current, error: currentError }] = await Promise.all([
+    supabase.from("consentimiento_tipos").select("codigo,titulo,descripcion,opcional,activo").eq("activo", true).order("codigo"),
+    supabase.from("consentimientos_paciente").select("codigo,estado").eq("profesional_id", auth.userId).eq("paciente_id", patientId),
+  ]);
+  if (typesError || currentError) throw new HttpError(500, "CONSENTS_LOOKUP_FAILED", "No fue posible preparar la solicitud de consentimientos.");
+  const currentByCode = new Map((current ?? []).map((item) => [item.codigo, item.estado]));
+  const solicitudId = crypto.randomUUID();
+  const token = `${crypto.randomUUID()}${crypto.randomUUID().replaceAll("-", "")}`;
+  const tokenHash = await hashToken(token);
+  const { error: requestError } = await supabase.from("consentimientos_solicitudes").insert({ id: solicitudId, profesional_id: auth.userId, paciente_id: patientId, token_hash: tokenHash, expira_en: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() });
+  if (requestError) throw new HttpError(500, "CONSENTS_REQUEST_FAILED", "No fue posible crear la solicitud de consentimientos.");
+  const pending = (types ?? []).filter((type) => !["aceptado", "revocado"].includes(currentByCode.get(type.codigo))).map((type) => ({
+    profesional_id: auth.userId,
+    paciente_id: patientId,
+    codigo: type.codigo,
+    estado: "pendiente",
+    version: "v1",
+    texto_snapshot: `${type.titulo}\n\n${type.descripcion}`,
+    solicitud_id: solicitudId,
+    otorgado_en: null,
+    revocado_en: null,
+    respondido_en: null,
+    canal: "portal",
+  }));
+  if (pending.length) {
+    const { data: saved, error } = await supabase.from("consentimientos_paciente").upsert(pending, { onConflict: "profesional_id,paciente_id,codigo" }).select("id,codigo");
+    if (error) throw new HttpError(500, "CONSENTS_REQUEST_FAILED", "No fue posible crear la solicitud de consentimientos.");
+    const savedByCode = new Map((saved ?? []).map((item) => [item.codigo, item.id]));
+    const eventos = pending.map((item) => ({ consentimiento_id: savedByCode.get(item.codigo), estado_anterior: currentByCode.get(item.codigo) ?? null, estado_nuevo: "pendiente", version: "v1", canal: "portal" }));
+    const { error: eventError } = await supabase.from("consentimientos_paciente_eventos").insert(eventos);
+    if (eventError) console.error(JSON.stringify({ scope: "requestPatientConsents.events", error: eventError.message, details: eventError.details }));
+  }
+  return { solicitud_id: solicitudId, enlace_token: token, expira_en_dias: 7, consentimientos: await listPatientConsents(supabase, auth, patientId) };
+}
+
+async function getPublicConsentRequest(supabase: SupabaseClient, token: string) {
+  if (!token || token.length < 30) throw new HttpError(400, "INVALID_CONSENT_TOKEN", "El enlace de consentimiento no es válido.");
+  const tokenHash = await hashToken(token);
+  const { data: request, error } = await supabase.from("consentimientos_solicitudes").select("id,profesional_id,paciente_id,expira_en,respondida_en,pacientes(nombres,apellidos),profesional(nombres,apellidos)").eq("token_hash", tokenHash).maybeSingle();
+  if (error || !request) throw new HttpError(404, "CONSENT_REQUEST_NOT_FOUND", "La solicitud no existe o ya no está disponible.");
+  if (new Date(request.expira_en).getTime() < Date.now()) throw new HttpError(410, "CONSENT_REQUEST_EXPIRED", "La solicitud de consentimiento expiró.");
+  const { data: consents, error: consentError } = await supabase.from("consentimientos_paciente").select("id,codigo,estado,version,texto_snapshot,consentimiento_tipos(codigo,titulo,descripcion,opcional)").eq("solicitud_id", request.id).order("codigo");
+  if (consentError) throw new HttpError(500, "CONSENTS_LOOKUP_FAILED", "No fue posible cargar los consentimientos.");
+  return { solicitud_id: request.id, expira_en: request.expira_en, respondida_en: request.respondida_en, paciente: request.pacientes, profesional: request.profesional, consentimientos: consents ?? [] };
+}
+
+async function respondPublicConsentRequest(req: Request, supabase: SupabaseClient, token: string) {
+  const request = await getPublicConsentRequest(supabase, token);
+  let body: Record<string, unknown>; try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
+  if (!body.respuestas || typeof body.respuestas !== "object") throw new HttpError(400, "INVALID_CONSENT_RESPONSE", "Debes indicar las respuestas de consentimiento.");
+  const respuestas = body.respuestas as Record<string, unknown>;
+  const allowed = new Set(["aceptado", "rechazado"]);
+  const now = new Date().toISOString();
+  for (const consent of request.consentimientos) {
+    const respuesta = respuestas[consent.codigo];
+    if (!allowed.has(String(respuesta)) || consent.estado === "aceptado" || consent.estado === "revocado") continue;
+    const { error } = await supabase.from("consentimientos_paciente").update({ estado: String(respuesta), respondido_en: now, otorgado_en: respuesta === "aceptado" ? now : null, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null }).eq("solicitud_id", request.solicitud_id).eq("codigo", consent.codigo);
+    if (error) throw new HttpError(500, "CONSENT_RESPONSE_FAILED", "No fue posible registrar la respuesta.");
+    await supabase.from("consentimientos_paciente_eventos").insert({ consentimiento_id: consent.id, estado_anterior: consent.estado, estado_nuevo: String(respuesta), version: consent.version, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null });
+  }
+  await supabase.from("consentimientos_solicitudes").update({ respondida_en: now }).eq("id", request.solicitud_id);
+  return await getPublicConsentRequest(supabase, token);
+}
+
 async function listOperationalAgenda(supabase: SupabaseClient, auth: AuthContext) {
   const { data, error } = await supabase.from("agenda_operativa").select(`
     *,
@@ -475,6 +599,9 @@ async function handler(req: Request): Promise<Response> {
     if (req.method === "GET" && path === "/v1/public/availability") return json(await listPublicBookingData(url, publicDb), 200, origin, id);
     if (req.method === "POST" && path === "/v1/public/patient-lookup") return json(await lookupPublicPatient(req, publicDb), 200, origin, id);
     if (req.method === "POST" && path === "/v1/public/booking") return json(await createPublicBooking(req, publicDb), 201, origin, id);
+    const publicConsentMatch = path.match(/^\/v1\/public\/consents\/([^/]+)$/);
+    if (req.method === "GET" && publicConsentMatch) return json(await getPublicConsentRequest(publicDb, publicConsentMatch[1]), 200, origin, id);
+    if (req.method === "POST" && publicConsentMatch) return json(await respondPublicConsentRequest(req, publicDb, publicConsentMatch[1]), 200, origin, id);
     if (req.method === "GET" && path === "/v1/me") { const auth = await authenticate(req, supabase); return json({ user_id: auth.userId, email: auth.email, profile: auth.profile }, 200, origin, id); }
     if (req.method === "GET" && path === "/v1/appointments") { const auth = await authenticate(req, supabase); return json(await listAppointments(supabase, auth), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/availability") { const auth = await authenticate(req, supabase); return json(await listAvailability(supabase, auth), 200, origin, id); }
@@ -486,6 +613,10 @@ async function handler(req: Request): Promise<Response> {
     if (req.method === "PATCH" && path === "/v1/notification-settings") { const auth = await authenticate(req, supabase); return json(await actualizarConfiguracionNotificaciones(req, supabase, auth), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/patients") { const auth = await authenticate(req, supabase); return json(await listPatients(supabase, auth), 200, origin, id); }
     if (req.method === "POST" && path === "/v1/patients") { const auth = await authenticate(req, supabase); return json(await createPatient(req, supabase, auth), 201, origin, id); }
+    const patientConsentsMatch = path.match(/^\/v1\/patients\/([^/]+)\/consents$/);
+    if (req.method === "GET" && patientConsentsMatch) { const auth = await authenticate(req, supabase); return json(await listPatientConsents(supabase, auth, patientConsentsMatch[1]), 200, origin, id); }
+    const patientConsentsRequestMatch = path.match(/^\/v1\/patients\/([^/]+)\/consents\/request$/);
+    if (req.method === "POST" && patientConsentsRequestMatch) { const auth = await authenticate(req, supabase); return json(await requestPatientConsents(supabase, auth, patientConsentsRequestMatch[1]), 201, origin, id); }
     const patientMatch = path.match(/^\/v1\/patients\/([^/]+)$/);
     if (req.method === "PATCH" && patientMatch) { const auth = await authenticate(req, supabase); return json(await updatePatient(req, supabase, auth, patientMatch[1]), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/operational-agenda") { const auth = await authenticate(req, supabase); return json(await listOperationalAgenda(supabase, auth), 200, origin, id); }

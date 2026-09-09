@@ -21,6 +21,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
   const [proximaSesion, setProximaSesion] = useState("");
   const [estado, setEstado] = useState("borrador");
   const [guardando, setGuardando] = useState(false);
+  const [mensajeOperacion, setMensajeOperacion] = useState(null);
 
   useEffect(() => {
     cargarFicha();
@@ -38,7 +39,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
 
     if (error) {
       setCargando(false);
-      alert(error.message);
+      setMensajeOperacion({ tipo: "error", texto: error.message });
       return;
     }
 
@@ -82,10 +83,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
           })
         );
       } catch (errorDrive) {
-        alert(
-          "No fue posible leer una o más sesiones desde Google Drive: " +
-            errorDrive.message
-        );
+        setMensajeOperacion({ tipo: "error", texto: "No fue posible leer una o más sesiones desde Google Drive: " + errorDrive.message });
       }
     }
 
@@ -184,9 +182,9 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
         );
 
         cerrarEdicion();
-        alert("Sesión actualizada correctamente en Google Drive.");
+        setMensajeOperacion({ tipo: "success", texto: "La sesión clínica fue actualizada correctamente en Google Drive." });
       } catch (error) {
-        alert("Error al actualizar sesión en Google Drive: " + error.message);
+        setMensajeOperacion({ tipo: "error", texto: "Error al actualizar sesión en Google Drive: " + error.message });
       }
 
       setGuardando(false);
@@ -202,7 +200,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
     setGuardando(false);
 
     if (error) {
-      alert(error.message);
+      setMensajeOperacion({ tipo: "error", texto: error.message });
       return;
     }
 
@@ -218,7 +216,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
     );
 
     cerrarEdicion();
-    alert("Ficha clínica actualizada correctamente.");
+    setMensajeOperacion({ tipo: "success", texto: "La ficha clínica fue actualizada correctamente." });
   }
 
   function BadgeOrigen({ sesion }) {
@@ -525,6 +523,16 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
                 {guardando ? "Guardando..." : "Guardar cambios"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {mensajeOperacion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl">
+            <div className="text-4xl">{mensajeOperacion.tipo === "success" ? "✅" : "⚠️"}</div>
+            <h2 className="mt-3 text-xl font-black text-slate-900">{mensajeOperacion.tipo === "success" ? "Operación realizada" : "No se pudo completar la operación"}</h2>
+            <p className="mt-3 text-sm text-slate-600">{mensajeOperacion.texto}</p>
+            <button type="button" onClick={() => setMensajeOperacion(null)} className="mt-5 w-full rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white">Entendido</button>
           </div>
         </div>
       )}

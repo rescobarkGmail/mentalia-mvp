@@ -168,9 +168,11 @@ export default function AgendaPage({
   const [semanaBase, setSemanaBase] = useState(inicioSemana(new Date()));
   const [citaEditando, setCitaEditando] = useState(null);
   const [citaConfirmando, setCitaConfirmando] = useState(null);
+  const [citaCancelando, setCitaCancelando] = useState(null);
   const [nuevaFecha, setNuevaFecha] = useState("");
   const [nuevaHora, setNuevaHora] = useState("");
   const [cargando, setCargando] = useState(false);
+  const [mensajeAgenda, setMensajeAgenda] = useState(null);
 
   const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
@@ -210,7 +212,7 @@ export default function AgendaPage({
       setDisponibilidad(disponibilidadData || []);
     } catch (error) {
       console.error("AgendaPage - error inesperado:", error);
-      alert("Error inesperado cargando agenda: " + error.message);
+      setMensajeAgenda({ tipo: "error", texto: "No fue posible cargar la agenda: " + error.message });
     } finally {
       setCargando(false);
     }
@@ -244,7 +246,7 @@ export default function AgendaPage({
       setPacientes(pacientesOrdenados);
     } catch (error) {
       console.error("Error inesperado cargando pacientes:", error);
-      alert("Error inesperado cargando pacientes: " + error.message);
+      setMensajeAgenda({ tipo: "error", texto: "No fue posible cargar los pacientes: " + error.message });
       setPacientes([]);
     } finally {
       setCargandoPacientes(false);
@@ -510,19 +512,19 @@ export default function AgendaPage({
     if (!eventoGoogleSeleccionado || guardandoVinculacion) return;
 
     if (!pacienteSeleccionadoId) {
-      alert("Selecciona un paciente para vincular la atención.");
+      setMensajeAgenda({ tipo: "error", texto: "Selecciona un paciente para vincular la atención." });
       return;
     }
 
     if (!user?.id) {
-      alert("No se pudo identificar al profesional autenticado.");
+      setMensajeAgenda({ tipo: "error", texto: "No se pudo identificar al profesional autenticado." });
       return;
     }
 
     const paciente = pacienteSeleccionado;
 
     if (!paciente) {
-      alert("No se encontró el paciente seleccionado.");
+      setMensajeAgenda({ tipo: "error", texto: "No se encontró el paciente seleccionado." });
       return;
     }
 
@@ -665,28 +667,31 @@ export default function AgendaPage({
       setPacienteSeleccionadoId("");
       setBusquedaPaciente("");
 
-      alert("Paciente vinculado correctamente en Mentalia.");
+      setMensajeAgenda({ tipo: "success", texto: "Paciente vinculado correctamente en Mentalia." });
     } catch (error) {
       console.error("Error inesperado vinculando paciente:", error);
-      alert("Error inesperado vinculando paciente: " + error.message);
+      setMensajeAgenda({ tipo: "error", texto: "Error inesperado vinculando paciente: " + error.message });
     } finally {
       setGuardandoVinculacion(false);
     }
   }
 
-  async function cancelarCita(cita) {
-    const confirma = window.confirm("¿Estás seguro de cancelar esta cita?");
-    if (!confirma) return;
+  function cancelarCita(cita) {
+    setCitaCancelando(cita);
+  }
 
+  async function ejecutarCancelacion(cita) {
     try {
       const actualizada = await cancelarCitaApi(cita.id);
       setCitas((prev) =>
         prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item)
       );
+      setMensajeAgenda({ tipo: "success", texto: actualizada?.notification_status === "enviado" ? "Cita cancelada y paciente notificado por correo." : "Cita cancelada." });
     } catch (error) {
-      if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
-      else alert(error.message || "No fue posible cancelar la cita.");
+      setMensajeAgenda({ tipo: "error", texto: error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible cancelar la cita." });
       return;
+    } finally {
+      setCitaCancelando(null);
     }
   }
 
@@ -695,12 +700,9 @@ export default function AgendaPage({
     try {
       const actualizada = await confirmarCitaApi(cita.id);
       setCitas((prev) => prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item));
-      if (actualizada?.notification_status === "enviado") alert("Reserva aceptada y correo enviado al paciente.");
-      else if (actualizada?.notification_status === "sin_correo") alert("Reserva aceptada. El paciente no tiene un correo registrado.");
-      else if (actualizada?.notification_status === "fallido") alert("Reserva aceptada, pero no fue posible enviar el correo.");
+      setMensajeAgenda({ tipo: actualizada?.notification_status === "fallido" ? "error" : "success", texto: actualizada?.notification_status === "enviado" ? "Reserva aceptada y correo enviado al paciente." : actualizada?.notification_status === "sin_correo" ? "Reserva aceptada. El paciente no tiene un correo registrado." : actualizada?.notification_status === "fallido" ? "Reserva aceptada, pero no fue posible enviar el correo." : "Reserva aceptada." });
     } catch (error) {
-      if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
-      else alert(error.message || "No fue posible aceptar la reserva.");
+      setMensajeAgenda({ tipo: "error", texto: error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible aceptar la reserva." });
     } finally {
       setCitaConfirmando(null);
     }
@@ -708,7 +710,7 @@ export default function AgendaPage({
 
   async function guardarReagenda() {
     if (!citaEditando || !nuevaFecha || !nuevaHora) {
-      alert("Selecciona fecha y hora.");
+      setMensajeAgenda({ tipo: "error", texto: "Selecciona fecha y hora." });
       return;
     }
 
@@ -722,12 +724,10 @@ export default function AgendaPage({
       setCitas((prev) =>
         prev.map((item) => item.id === citaEditando.id ? { ...item, ...actualizada } : item)
       );
+      setMensajeAgenda({ tipo: "success", texto: actualizada?.notification_status === "enviado" ? "Cita reagendada y paciente notificado por correo." : "Cita reagendada." });
     } catch (error) {
-      if (error.code === "SLOT_ALREADY_BOOKED") alert("Ese horario ya está reservado. Selecciona otro horario.");
-      else if (error.code === "OUTSIDE_AVAILABILITY") alert("El horario seleccionado no está dentro de la disponibilidad configurada.");
-      else if (error.code === "PAST_APPOINTMENT") alert("No puedes reagendar una cita a una fecha u hora pasada.");
-      else if (error.code === "AUTH_REQUIRED" || error.status === 401) alert("Tu sesión expiró. Inicia sesión nuevamente.");
-      else alert(error.message || "No fue posible reprogramar la cita.");
+      const texto = error.code === "SLOT_ALREADY_BOOKED" ? "Ese horario ya está reservado. Selecciona otro horario." : error.code === "OUTSIDE_AVAILABILITY" ? "El horario seleccionado no está dentro de la disponibilidad configurada." : error.code === "PAST_APPOINTMENT" ? "No puedes reagendar una cita a una fecha u hora pasada." : error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible reprogramar la cita.";
+      setMensajeAgenda({ tipo: "error", texto });
       return;
     }
 
@@ -909,13 +909,19 @@ export default function AgendaPage({
   function cambiarSemanaAgenda(cantidad) { if (timelineRef.current) scrollPreservadoRef.current = timelineRef.current.scrollTop; setSemanaBase((prev) => inicioSemana(sumarDias(prev, cantidad))); }
 
   function accionAceptarReserva(cita) {
-    return cita?.estado === "pendiente_confirmacion" ? <button type="button" onClick={() => confirmarCita(cita)} className="mt-1 w-full rounded bg-emerald-600 px-1 py-1 text-[9px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button> : null;
+    if (!cita) return null;
+    return <div className="mt-1 grid grid-cols-2 gap-1">
+      <span className="col-span-2 text-[9px] font-black uppercase tracking-wide text-slate-500">Estado: {String(cita.estado || "").replaceAll("_", " ")}</span>
+      {cita.estado === "pendiente_confirmacion" && <button type="button" onClick={() => setCitaConfirmando(cita)} className="col-span-2 rounded bg-emerald-600 px-1 py-1 text-[9px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button>}
+      <button type="button" onClick={() => { setCitaEditando(cita); setNuevaFecha(cita.fecha?.slice(0, 10) || ""); setNuevaHora(cita.hora_inicio?.slice(0, 5) || ""); }} className="rounded border border-blue-300 bg-white px-1 py-1 text-[9px] font-black text-blue-700 hover:bg-blue-50">Reagendar</button>
+      <button type="button" onClick={() => cancelarCita(cita)} className="rounded border border-red-300 bg-white px-1 py-1 text-[9px] font-black text-red-700 hover:bg-red-50">Cancelar</button>
+    </div>;
   }
 
   function renderHorarioAgendaConModalidad() {
     const horas = Array.from({ length: 24 }, (_, i) => i);
     const slotsPorDia = diasSemana.map(slotsMentaliaDelDiaAgenda);
-    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]"><div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>{horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="min-h-[28px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>{diasSemana.map((f, i) => { const fecha = fechaTexto(f); const slots = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora); const continuaciones = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) < hora && (Number(s.hora_fin.slice(0, 2)) + (s.hora_fin.slice(3, 5) !== "00" ? 1 : 0)) > hora); const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : []; return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">{eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800">{e.hora_inicio} - {e.hora_fin}<p className="text-[10px]">{e.titulo}</p></div>)}{continuaciones.map((s) => <div key={`cont-${fecha}-${s.hora_inicio}-${hora}`} className="min-h-[28px] rounded-lg border border-emerald-200 bg-emerald-50" />)}{slots.map((s) => { const cita = citas.find((c) => c.fecha?.slice(0, 10) === fecha && c.hora_inicio?.slice(0, 5) === s.hora_inicio && c.estado !== "cancelada"); return <div key={s.hora_inicio} className={cita ? "rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700" : "rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700"}><div className="flex items-center justify-between gap-1"><span>{s.hora_inicio} - {s.hora_fin}</span><ModalidadAgenda modalidad={s.modalidad} /></div>{cita && <><p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p>{cita.estado === "confirmada" && <button type="button" onClick={() => abrirFlujo(cita)} className="mt-1 w-full rounded-md bg-cyan-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-cyan-700">Abrir atención</button>}</>}</div>;})}</div></div>;})}</div>)}</div></div>;
+    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]"><div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>{horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="min-h-[28px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>{diasSemana.map((f, i) => { const fecha = fechaTexto(f); const slots = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora); const continuaciones = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) < hora && (Number(s.hora_fin.slice(0, 2)) + (s.hora_fin.slice(3, 5) !== "00" ? 1 : 0)) > hora); const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : []; return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">{eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800">{e.hora_inicio} - {e.hora_fin}<p className="text-[10px]">{e.titulo}</p></div>)}{continuaciones.map((s) => <div key={`cont-${fecha}-${s.hora_inicio}-${hora}`} className="min-h-[28px] rounded-lg border border-emerald-200 bg-emerald-50" />)}{slots.map((s) => { const cita = citas.find((c) => c.fecha?.slice(0, 10) === fecha && c.hora_inicio?.slice(0, 5) === s.hora_inicio && c.estado !== "cancelada"); return <div key={s.hora_inicio} className={cita ? "rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700" : "rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700"}><div className="flex items-center justify-between gap-1"><span>{s.hora_inicio} - {s.hora_fin}</span><ModalidadAgenda modalidad={s.modalidad} /></div>{cita && <><p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p>{accionAceptarReserva(cita)}{(cita.estado === "confirmada" || cita.estado === "reprogramada") && <button type="button" onClick={() => abrirFlujo(cita)} className="mt-1 w-full rounded-md bg-cyan-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-cyan-700">Abrir Pre-sesión</button>}</>}</div>;})}</div></div>;})}</div>)}</div></div>;
   }
 
   return (
@@ -941,6 +947,13 @@ export default function AgendaPage({
         {errorGoogleCalendar && (
           <div className="mb-6 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-semibold text-red-700">
             {errorGoogleCalendar}
+          </div>
+        )}
+
+        {mensajeAgenda && (
+          <div className={`mb-6 flex items-center justify-between gap-3 rounded-2xl border p-4 text-sm font-bold ${mensajeAgenda.tipo === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+            <span>{mensajeAgenda.texto}</span>
+            <button type="button" onClick={() => setMensajeAgenda(null)} className="rounded-lg px-2 py-1 text-xs font-black hover:bg-white/70">Cerrar</button>
           </div>
         )}
 
@@ -1156,6 +1169,21 @@ export default function AgendaPage({
             <div className="mt-6 flex gap-3">
               <button type="button" onClick={() => setCitaConfirmando(null)} className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-bold text-slate-700 hover:bg-slate-50">Cancelar</button>
               <button type="button" onClick={() => confirmarCita(citaConfirmando)} className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 font-black text-white hover:bg-emerald-700">Aceptar reserva</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {citaCancelando && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <p className="text-xs font-black uppercase tracking-wide text-red-600">Cancelar reserva</p>
+            <h2 className="mt-1 text-xl font-black text-slate-900">¿Cancelar esta cita?</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">El paciente recibirá una notificación y la hora quedará disponible nuevamente.</p>
+            <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">{`${citaCancelando.pacientes?.nombres || "Paciente"} ${citaCancelando.pacientes?.apellidos || ""}`.trim()} · {citaCancelando.fecha?.slice(0, 10)} · {citaCancelando.hora_inicio?.slice(0, 5)}</p>
+            <div className="mt-6 flex gap-3">
+              <button type="button" onClick={() => setCitaCancelando(null)} className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-bold text-slate-700 hover:bg-slate-50">Volver</button>
+              <button type="button" onClick={() => ejecutarCancelacion(citaCancelando)} className="flex-1 rounded-xl bg-red-600 px-4 py-3 font-black text-white hover:bg-red-700">Sí, cancelar</button>
             </div>
           </div>
         </div>

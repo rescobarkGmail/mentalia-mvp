@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { formatearFecha } from "../utils/formato";
 import {  obtenerAccessTokenGoogle,  leerJsonSesionDrive,} from "../lib/googleDriveClient";
-import { actualizarPacienteApi, obtenerUltimaSesionClinica } from "../lib/mentaliaApi";
+import { actualizarPacienteApi, obtenerUltimaSesionClinica, obtenerConsentimientosPaciente, solicitarConsentimientosPaciente } from "../lib/mentaliaApi";
 
 function calcularEdad(fechaNacimiento) {
   if (!fechaNacimiento) return null;
@@ -27,10 +27,49 @@ export default function PreSesionPage({
   const [editandoAdministrativos, setEditandoAdministrativos] = useState(false);
   const [guardandoAdministrativos, setGuardandoAdministrativos] = useState(false);
   const [datosAdministrativos, setDatosAdministrativos] = useState({});
+  const [consentimientos, setConsentimientos] = useState([]);
+  const [cargandoConsentimientos, setCargandoConsentimientos] = useState(true);
+  const [solicitandoConsentimientos, setSolicitandoConsentimientos] = useState(false);
+  const [mensajeConsentimientos, setMensajeConsentimientos] = useState("");
+  const [enlaceConsentimientos, setEnlaceConsentimientos] = useState("");
 
   useEffect(() => {
     cargarPreSesion();
+    cargarConsentimientos();
   }, []);
+
+  function obtenerPacienteId() {
+    return cita.paciente_id || cita.paciente?.id || cita.pacientes?.id;
+  }
+
+  async function cargarConsentimientos() {
+    const pacienteId = obtenerPacienteId();
+    if (!pacienteId) { setCargandoConsentimientos(false); return; }
+    try {
+      setConsentimientos(await obtenerConsentimientosPaciente(pacienteId));
+    } catch (error) {
+      setMensajeConsentimientos(error.message || "No fue posible cargar los consentimientos.");
+    } finally {
+      setCargandoConsentimientos(false);
+    }
+  }
+
+  async function solicitarConsentimientos() {
+    const pacienteId = obtenerPacienteId();
+    if (!pacienteId) return;
+    setSolicitandoConsentimientos(true);
+    setMensajeConsentimientos("");
+    try {
+      const resultado = await solicitarConsentimientosPaciente(pacienteId);
+      setConsentimientos(resultado.consentimientos || []);
+      setEnlaceConsentimientos(`${window.location.origin}/consentimiento/${resultado.enlace_token}`);
+      setMensajeConsentimientos("Solicitud preparada. El envío al paciente se habilitará en el siguiente paso.");
+    } catch (error) {
+      setMensajeConsentimientos(error.message || "No fue posible preparar la solicitud.");
+    } finally {
+      setSolicitandoConsentimientos(false);
+    }
+  }
 
   async function cargarPreSesion() {
     setCargando(true);
@@ -225,6 +264,21 @@ export default function PreSesionPage({
               <p className="mt-1 font-bold text-cyan-900">{cita.canal_contacto || "No informado"}</p>
             </div>
           </div>
+        </section>
+
+        <section className="mb-6 rounded-3xl bg-white p-6 shadow">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-slate-900">Consentimientos del paciente</h2>
+              <p className="text-sm text-slate-500">Autorizaciones específicas para este paciente y este profesional.</p>
+            </div>
+            <button type="button" onClick={solicitarConsentimientos} disabled={solicitandoConsentimientos} className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50">
+              {solicitandoConsentimientos ? "Preparando..." : "Solicitar consentimientos"}
+            </button>
+          </div>
+          {mensajeConsentimientos && <p className="mb-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-sm text-cyan-800">{mensajeConsentimientos}</p>}
+          {enlaceConsentimientos && <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3"><p className="text-xs font-bold text-amber-800">Enlace de prueba para el paciente (expira en 7 días)</p><div className="mt-2 flex flex-col gap-2 sm:flex-row"><input readOnly value={enlaceConsentimientos} className="min-w-0 flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs text-slate-700" /><a href={enlaceConsentimientos} target="_blank" rel="noreferrer" className="rounded-lg bg-amber-600 px-3 py-2 text-center text-xs font-black text-white">Abrir enlace</a></div></div>}
+          {cargandoConsentimientos ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Cargando autorizaciones...</p> : consentimientos.length === 0 ? <p className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">Aún no hay consentimientos registrados para este profesional.</p> : <div className="space-y-2">{consentimientos.map((consentimiento) => { const tipo = consentimiento.consentimiento_tipos || {}; const estado = consentimiento.estado || "pendiente"; const color = estado === "aceptado" ? "bg-emerald-100 text-emerald-800" : estado === "rechazado" || estado === "revocado" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"; return <div key={consentimiento.codigo} className="flex flex-col gap-2 rounded-xl border border-slate-200 p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-bold text-slate-800">{tipo.titulo || consentimiento.codigo}</p><p className="text-xs text-slate-500">{tipo.descripcion || "Consentimiento registrado para este profesional."}</p></div><span className={`w-fit rounded-full px-3 py-1 text-xs font-black uppercase ${color}`}>{estado}</span></div>; })}</div>}
         </section>
 
         <section className="rounded-3xl bg-white p-6 shadow">
