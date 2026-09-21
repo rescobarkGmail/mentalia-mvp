@@ -10,6 +10,21 @@ import {
   obtenerConsentimientosPaciente,
 } from "../lib/mentaliaApi";
 
+function CampoClinico({ label, value, onChange, rows = 4, className = "border-slate-300" }) {
+  return (
+    <label className="block space-y-2">
+      <span className="block text-sm font-black text-slate-700">{label}</span>
+      <textarea
+        aria-label={label}
+        value={value}
+        onChange={onChange}
+        rows={rows}
+        className={`w-full rounded-2xl border px-4 py-3 ${className}`}
+      />
+    </label>
+  );
+}
+
 export default function SesionClinicaPage({ user, cita, goBack }) {
   const [guardando, setGuardando] = useState(false);
   const [storageProvider, setStorageProvider] = useState("mentalia_cloud");
@@ -31,6 +46,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   const [mensajeOperacion, setMensajeOperacion] = useState(null);
   const [consentimientos, setConsentimientos] = useState([]);
   const [tipoAudio, setTipoAudio] = useState(null);
+  const [confirmacionProfesional, setConfirmacionProfesional] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -168,6 +184,8 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     }
 
     setProcesandoAudio(true);
+    // Cada nueva propuesta de IA requiere una revisión profesional explícita.
+    setConfirmacionProfesional(false);
 
     try {
       const formData = new FormData();
@@ -183,11 +201,17 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
 
-      setTranscripcion(data.transcripcion || "");
+      const transcripcionProcesada = data.transcripcion || "";
+      setTranscripcion(transcripcionProcesada);
 
-      if (data.motivo_consulta) setMotivoConsulta(data.motivo_consulta);
-      const bloqueTranscripcion = `Transcripción profesional:\n${data.transcripcion || ""}`;
-      setNotasClinicas((prev) => prev ? `${prev}\n\n${bloqueTranscripcion}` : bloqueTranscripcion);
+      const motivoDesdeTranscripcion = transcripcionProcesada
+        .split(/(?<=[.!?])\s+/)
+        .map((frase) => frase.trim())
+        .find(Boolean) || "";
+      // Cada procesamiento reemplaza la propuesta anterior para evitar
+      // concatenar transcripciones duplicadas en los campos clínicos.
+      setMotivoConsulta(data.motivo_consulta?.trim() || motivoDesdeTranscripcion);
+      setNotasClinicas(data.notas_clinicas?.trim() || transcripcionProcesada);
 
       setResumenSesion(data.resumen_sesion || "");
       setFocoTrabajado(data.foco_trabajado || "");
@@ -217,6 +241,37 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   }
 
   async function guardarSesion(estado = "borrador") {
+    if (!confirmacionProfesional) {
+      setMensajeOperacion({ tipo: "error", texto: "Revisa el contenido de la sesión y marca la confirmación profesional antes de guardar." });
+      return;
+    }
+
+    if (estado === "finalizada") {
+      const camposClinicos = [
+        ["Motivo de consulta", motivoConsulta],
+        ["Notas clínicas", notasClinicas],
+        ["Observaciones", observaciones],
+        ["Tareas o acuerdos", tareasAcuerdos],
+        ["Resumen de la sesión", resumenSesion],
+        ["Foco de trabajo", focoTrabajado],
+        ["Próxima sesión sugerida", proximaSesion],
+      ];
+      const motivoCompleto = motivoConsulta.trim().length > 0;
+      const contenidoAdicional = camposClinicos.slice(1).some(([, valor]) => valor.trim().length > 0);
+
+      if (!motivoCompleto || !contenidoAdicional) {
+        const faltantes = [
+          !motivoCompleto ? "Motivo de consulta" : null,
+          !contenidoAdicional ? "al menos un campo clínico adicional" : null,
+        ].filter(Boolean);
+        setMensajeOperacion({
+          tipo: "error",
+          texto: `Completa ${faltantes.join(" y ")} antes de finalizar la sesión. Puedes guardar un borrador si aún no tienes toda la información.`,
+        });
+        return;
+      }
+    }
+
     setGuardando(true);
 
     const pacienteId = cita.paciente_id || cita.paciente?.id || cita.pacientes?.id;
@@ -426,9 +481,10 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
 
             {transcripcion && (
               <div className="mt-5 rounded-2xl bg-white p-4">
-                <p className="mb-2 text-sm font-black text-slate-700">
-                  Transcripción IA
-                </p>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-black text-slate-700">Transcripción IA</p>
+                  <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Propuesta por revisar</span>
+                </div>
                 <p className="whitespace-pre-line text-sm text-slate-600">
                   {transcripcion}
                 </p>
@@ -443,37 +499,10 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
               Registro de atención
             </h2>
 
-            <textarea
-              placeholder="Motivo de consulta"
-              value={motivoConsulta}
-              onChange={(e) => setMotivoConsulta(e.target.value)}
-              rows={3}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
-            />
-
-            <textarea
-              placeholder="Notas clínicas"
-              value={notasClinicas}
-              onChange={(e) => setNotasClinicas(e.target.value)}
-              rows={8}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
-            />
-
-            <textarea
-              placeholder="Observaciones"
-              value={observaciones}
-              onChange={(e) => setObservaciones(e.target.value)}
-              rows={4}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
-            />
-
-            <textarea
-              placeholder="Tareas / acuerdos"
-              value={tareasAcuerdos}
-              onChange={(e) => setTareasAcuerdos(e.target.value)}
-              rows={4}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3"
-            />
+            <CampoClinico label="Motivo de consulta" value={motivoConsulta} onChange={(e) => setMotivoConsulta(e.target.value)} rows={3} />
+            <CampoClinico label="Notas clínicas" value={notasClinicas} onChange={(e) => setNotasClinicas(e.target.value)} rows={8} />
+            <CampoClinico label="Observaciones" value={observaciones} onChange={(e) => setObservaciones(e.target.value)} />
+            <CampoClinico label="Tareas / acuerdos" value={tareasAcuerdos} onChange={(e) => setTareasAcuerdos(e.target.value)} />
           </section>
 
           <section className="mt-8 rounded-3xl border border-cyan-100 bg-cyan-50 p-5">
@@ -482,48 +511,38 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
             </h2>
 
             <div className="mt-5 space-y-5">
-              <textarea
-                placeholder="Resumen de sesión"
-                value={resumenSesion}
-                onChange={(e) => setResumenSesion(e.target.value)}
-                rows={4}
-                className="w-full rounded-2xl border border-cyan-200 bg-white px-4 py-3"
-              />
-
-              <textarea
-                placeholder="Foco trabajado"
-                value={focoTrabajado}
-                onChange={(e) => setFocoTrabajado(e.target.value)}
-                rows={3}
-                className="w-full rounded-2xl border border-cyan-200 bg-white px-4 py-3"
-              />
-
-              <textarea
-                placeholder="Próxima sesión sugerida"
-                value={proximaSesion}
-                onChange={(e) => setProximaSesion(e.target.value)}
-                rows={3}
-                className="w-full rounded-2xl border border-cyan-200 bg-white px-4 py-3"
-              />
+              <CampoClinico label="Resumen de sesión" value={resumenSesion} onChange={(e) => setResumenSesion(e.target.value)} className="border-cyan-200 bg-white" />
+              <CampoClinico label="Foco trabajado" value={focoTrabajado} onChange={(e) => setFocoTrabajado(e.target.value)} rows={3} className="border-cyan-200 bg-white" />
+              <CampoClinico label="Próxima sesión sugerida" value={proximaSesion} onChange={(e) => setProximaSesion(e.target.value)} rows={3} className="border-cyan-200 bg-white" />
             </div>
           </section>
 
-          <div className="mt-8 flex flex-col gap-3 md:flex-row">
-            <button
-              onClick={() => guardarSesion("borrador")}
-              disabled={guardando}
-              className="flex-1 rounded-2xl border border-slate-300 px-6 py-4 font-black text-slate-700 disabled:opacity-50"
-            >
-              {guardando ? "Guardando..." : "Guardar borrador"}
-            </button>
+          <div className="mt-8">
+            <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-black">Confirmación profesional obligatoria</p>
+              <p className="mt-1">Revisa el contenido de la sesión, incluyendo cualquier texto propuesto por IA, antes de guardarlo o finalizarlo.</p>
+            </div>
+            <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <input type="checkbox" checked={confirmacionProfesional} onChange={(e) => setConfirmacionProfesional(e.target.checked)} className="mt-1 h-4 w-4 accent-cyan-600" />
+              <span>He revisado y validado el contenido de esta sesión y lo confirmo como registro profesional.</span>
+            </label>
+            <div className="mt-3 flex flex-col gap-3 md:flex-row">
+              <button
+                onClick={() => guardarSesion("borrador")}
+                disabled={guardando || !confirmacionProfesional}
+                className="flex-1 rounded-2xl border border-slate-300 px-6 py-4 font-black text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {guardando ? "Guardando..." : "Guardar borrador"}
+              </button>
 
-            <button
-              onClick={() => guardarSesion("finalizada")}
-              disabled={guardando}
-              className="flex-1 rounded-2xl bg-[#18AFC1] px-6 py-4 font-black text-white disabled:opacity-50"
-            >
-              {guardando ? "Guardando..." : "Finalizar sesión"}
-            </button>
+              <button
+                onClick={() => guardarSesion("finalizada")}
+                disabled={guardando || !confirmacionProfesional}
+                className="flex-1 rounded-2xl bg-[#18AFC1] px-6 py-4 font-black text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {guardando ? "Guardando..." : "Finalizar sesión"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

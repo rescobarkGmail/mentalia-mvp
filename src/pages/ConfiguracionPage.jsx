@@ -76,6 +76,7 @@ function Interruptor({ checked, onChange, label }) {
 export default function ConfiguracionPage({ user, goBack }) {
   const [storageProvider, setStorageProvider] = useState("mentalia_cloud");
   const [guardando, setGuardando] = useState(false);
+  const [mensajeStorage, setMensajeStorage] = useState("");
   const [slugPublico, setSlugPublico] = useState("");
   const [reservaPublicaActiva, setReservaPublicaActiva] = useState(false);
   const [guardandoReservaPublica, setGuardandoReservaPublica] = useState(false);
@@ -236,11 +237,11 @@ export default function ConfiguracionPage({ user, goBack }) {
     setGuardando(false);
 
     if (error) {
-      alert(error.message);
+      setMensajeStorage(error.message || "No fue posible guardar la configuración.");
       return;
     }
 
-    alert("Configuración guardada correctamente.");
+    setMensajeStorage("Configuración de almacenamiento guardada correctamente.");
   }
 
   function cambiarNotificacion(campo, valor) {
@@ -339,6 +340,7 @@ export default function ConfiguracionPage({ user, goBack }) {
               {opciones.find((o) => o.id === storageProvider)?.titulo}
             </p>
           </div>
+          {mensajeStorage && <p className="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-sm font-bold text-cyan-800">{mensajeStorage}</p>}
         </section>
 
         <section className="mt-6 rounded-3xl bg-white p-6 shadow">

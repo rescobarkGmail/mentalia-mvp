@@ -291,6 +291,8 @@ No diagnostiques, no reemplaces el criterio profesional y no inventes informaci�
 
 Tu tarea es estructurar una transcripción de sesión psicológica en un borrador editable.
 
+El campo "motivo_consulta" es obligatorio cuando la transcripción indique por qué el paciente consulta. Resume ese motivo en una frase breve y concreta; no lo dejes vacío si existe esa información en el texto.
+
 Devuelve únicamente JSON válido con esta estructura:
 
 {
@@ -360,6 +362,16 @@ ${transcripcion}
         tareas_acuerdos: "",
         proxima_sesion: "",
       };
+    }
+
+    // Respaldo determinista: evita perder el motivo cuando el modelo devuelve
+    // el campo vacío pese a que la transcripción lo declara explícitamente.
+    if (!clinicalJson.motivo_consulta?.trim()) {
+      const primeraFrase = transcripcion
+        .split(/(?<=[.!?])\s+/)
+        .map((frase) => frase.trim())
+        .find(Boolean);
+      clinicalJson.motivo_consulta = primeraFrase || "";
     }
 
     return jsonResponse(req, {

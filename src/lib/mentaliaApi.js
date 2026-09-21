@@ -46,6 +46,10 @@ export function responderSolicitudConsentimientoPublica(token, respuestas) {
   return apiPublicRequest(`/v1/public/consents/${encodeURIComponent(token)}`, { method: "POST", body: JSON.stringify({ respuestas }) });
 }
 
+export function revocarConsentimientoPublico(token, codigo) {
+  return apiPublicRequest(`/v1/public/consents/${encodeURIComponent(token)}`, { method: "POST", body: JSON.stringify({ revocar: [codigo] }) });
+}
+
 async function obtenerAccessToken() {
   try {
     const timeout = new Promise((_, reject) => {

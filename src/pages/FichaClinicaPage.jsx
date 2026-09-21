@@ -6,6 +6,11 @@ import {
   leerJsonSesionDrive,
   actualizarJsonSesionDrive,
 } from "../lib/googleDriveClient";
+import { obtenerConsentimientosPaciente } from "../lib/mentaliaApi";
+
+function limpiarMarcadorTranscripcion(texto = "") {
+  return texto.replace(/Transcripción profesional:\s*/gi, "").trim();
+}
 
 export default function FichaClinicaPage({ user, paciente, goBack }) {
   const [sesiones, setSesiones] = useState([]);
@@ -22,6 +27,17 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
   const [estado, setEstado] = useState("borrador");
   const [guardando, setGuardando] = useState(false);
   const [mensajeOperacion, setMensajeOperacion] = useState(null);
+
+  const [consentimientosPaciente, setConsentimientosPaciente] = useState(null);
+
+  async function verConsentimientos() {
+    try {
+      const data = await obtenerConsentimientosPaciente(paciente.id);
+      setConsentimientosPaciente(data || []);
+    } catch (error) {
+      setMensajeOperacion({ tipo: "error", texto: error.message || "No fue posible cargar los consentimientos." });
+    }
+  }
 
   useEffect(() => {
     cargarFicha();
@@ -94,7 +110,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
   function abrirEdicion(sesion) {
     setEditandoSesion(sesion);
     setMotivoConsulta(sesion.motivo_consulta || "");
-    setNotasClinicas(sesion.notas_clinicas || "");
+    setNotasClinicas(limpiarMarcadorTranscripcion(sesion.notas_clinicas || ""));
     setObservaciones(sesion.observaciones || "");
     setTareasAcuerdos(sesion.tareas_acuerdos || "");
     setResumenSesion(sesion.resumen_sesion || "");
@@ -284,12 +300,10 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
                 </p>
               </div>
 
-              <button
-                onClick={cargarFicha}
-                className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700"
-              >
-                Actualizar
-              </button>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button type="button" onClick={verConsentimientos} className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700 hover:bg-cyan-50">Ver consentimientos</button>
+                <button onClick={cargarFicha} className="rounded-xl border border-cyan-200 bg-white px-4 py-2 font-bold text-cyan-700">Actualizar</button>
+              </div>
             </div>
 
             {cargando ? (
@@ -363,7 +377,7 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
                           Notas clínicas
                         </p>
                         <p className="whitespace-pre-line text-sm text-slate-600">
-                          {s.notas_clinicas || "Sin registro"}
+                          {s.notas_clinicas ? limpiarMarcadorTranscripcion(s.notas_clinicas) : "Sin registro"}
                         </p>
                       </div>
 
@@ -523,6 +537,14 @@ export default function FichaClinicaPage({ user, paciente, goBack }) {
                 {guardando ? "Guardando..." : "Guardar cambios"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {consentimientosPaciente && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+          <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between"><div><h2 className="text-2xl font-black text-slate-900">Consentimientos</h2><p className="text-sm text-slate-500">{paciente.nombres} {paciente.apellidos}</p></div><button type="button" onClick={() => setConsentimientosPaciente(null)} className="rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-600">Cerrar</button></div>
+            <div className="mt-5 space-y-3">{consentimientosPaciente.length ? consentimientosPaciente.map((item) => { const estado = item.estado || "pendiente"; const color = estado === "aceptado" ? "border-emerald-200 bg-emerald-50" : estado === "rechazado" || estado === "revocado" ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"; return <div key={item.codigo} className={`flex items-center justify-between rounded-2xl border p-4 ${color}`}><p className="font-black text-slate-800">{item.consentimiento_tipos?.titulo || item.codigo}</p><span className="rounded-full bg-white/70 px-3 py-1 text-xs font-black uppercase text-slate-700">{estado}</span></div>; }) : <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Aún no hay consentimientos registrados.</p>}</div>
           </div>
         </div>
       )}

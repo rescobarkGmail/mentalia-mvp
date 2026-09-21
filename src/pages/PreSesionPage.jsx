@@ -32,6 +32,7 @@ export default function PreSesionPage({
   const [solicitandoConsentimientos, setSolicitandoConsentimientos] = useState(false);
   const [mensajeConsentimientos, setMensajeConsentimientos] = useState("");
   const [enlaceConsentimientos, setEnlaceConsentimientos] = useState("");
+  const puedeGrabarConversacion = consentimientos.find((item) => item.codigo === "grabacion_audio")?.estado === "aceptado" && consentimientos.find((item) => item.codigo === "transcripcion_ia")?.estado === "aceptado";
 
   useEffect(() => {
     cargarPreSesion();
@@ -63,7 +64,8 @@ export default function PreSesionPage({
       const resultado = await solicitarConsentimientosPaciente(pacienteId);
       setConsentimientos(resultado.consentimientos || []);
       setEnlaceConsentimientos(`${window.location.origin}/consentimiento/${resultado.enlace_token}`);
-      setMensajeConsentimientos("Solicitud preparada. El envío al paciente se habilitará en el siguiente paso.");
+      const estadoCorreo = resultado.notification_status === "enviado" ? "Correo enviado al paciente." : resultado.notification_status === "sin_correo" ? "El paciente no tiene correo registrado." : "No fue posible enviar el correo; puedes usar el enlace generado.";
+      setMensajeConsentimientos(`Solicitud creada. ${estadoCorreo}`);
     } catch (error) {
       setMensajeConsentimientos(error.message || "No fue posible preparar la solicitud.");
     } finally {
@@ -82,9 +84,7 @@ export default function PreSesionPage({
     if (!pacienteId) {
       setCargando(false);
   
-      alert(
-        "No se pudo identificar el paciente para cargar la pre-sesión."
-      );
+      setMensajeConsentimientos("No se pudo identificar el paciente para cargar la pre-sesión.");
   
       return;
     }
@@ -94,7 +94,7 @@ export default function PreSesionPage({
       data = await obtenerUltimaSesionClinica(pacienteId);
     } catch (error) {
       setCargando(false);
-      alert(error.message || "No fue posible cargar la sesión clínica.");
+      setMensajeConsentimientos(error.message || "No fue posible cargar la sesión clínica.");
       return;
     }
   
@@ -128,10 +128,7 @@ export default function PreSesionPage({
         };
       }
     } catch (errorDrive) {
-      alert(
-        "No fue posible leer la sesión clínica desde Google Drive: " +
-          errorDrive.message
-      );
+      setMensajeConsentimientos("No fue posible leer la sesión clínica desde Google Drive: " + errorDrive.message);
     }
   
     setUltimaSesion(sesionFinal);
@@ -161,7 +158,7 @@ export default function PreSesionPage({
       setPacienteAdministrativo(actualizado);
       setEditandoAdministrativos(false);
     } catch (error) {
-      alert(error.message || "No fue posible actualizar los datos del paciente.");
+      setMensajeConsentimientos(error.message || "No fue posible actualizar los datos del paciente.");
     } finally {
       setGuardandoAdministrativos(false);
     }
@@ -212,6 +209,14 @@ export default function PreSesionPage({
               </p>
             </div>
           </div>
+        </section>
+
+        <section className={`mb-6 rounded-2xl border p-4 ${puedeGrabarConversacion ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div><p className="text-sm font-black text-slate-900">Estado para iniciar la atención</p><p className="text-sm text-slate-600">Cita: <span className="font-bold">{String(cita.estado || "reservada").replaceAll("_", " ")}</span></p></div>
+            <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${puedeGrabarConversacion ? "bg-emerald-200 text-emerald-800" : "bg-amber-200 text-amber-800"}`}>{puedeGrabarConversacion ? "Grabación autorizada" : "Grabación no autorizada"}</span>
+          </div>
+          <p className="mt-2 text-xs text-slate-600">{puedeGrabarConversacion ? "La conversación puede grabarse y transcribirse temporalmente." : "La conversación no puede grabarse. El profesional puede usar el resumen privado."}</p>
         </section>
 
         <section className="mb-6 rounded-3xl bg-white p-6 shadow">

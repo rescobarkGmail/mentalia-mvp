@@ -17,6 +17,7 @@ import SesionClinicaPage from "./pages/SesionClinicaPage";
 import FichaClinicaPage from "./pages/FichaClinicaPage";
 import ConfiguracionPage from "./pages/ConfiguracionPage";
 import ConsentimientoPublicoPage from "./pages/ConsentimientoPublicoPage";
+import AppShell from "./components/AppShell";
 
 
 function obtenerReservaPublicaDesdeUrl() {
@@ -67,6 +68,7 @@ export default function App() {
 
   const [citaActiva, setCitaActiva] = useState(null);
   const [pacienteActivo, setPacienteActivo] = useState(null);
+  const [origenFichaClinica, setOrigenFichaClinica] = useState("pacientes");
   const [citaPreSesion, setCitaPreSesion] = useState(null);
 
   const [agendaRefreshKey, setAgendaRefreshKey] = useState(0);
@@ -298,8 +300,9 @@ export default function App() {
     setCitaPreSesion(null);
   }
 
-  function verFichaClinica(paciente) {
+  function verFichaClinica(paciente, origen = "pacientes") {
     setPacienteActivo(paciente);
+    setOrigenFichaClinica(origen);
     setView("ficha-clinica");
   }
 
@@ -352,42 +355,38 @@ export default function App() {
 
   if (view === "agenda") {
     return (
-      <AgendaPage
-        user={user}
-        refreshKey={agendaRefreshKey}
-        goBack={() => setView("dashboard")}
-        iniciarFlujo={iniciarFlujo}
-      />
+      <AppShell activeView="agenda" onNavigate={setView}>
+        <AgendaPage user={user} refreshKey={agendaRefreshKey} goBack={() => setView("dashboard")} iniciarFlujo={iniciarFlujo} verFichaClinica={(paciente) => verFichaClinica(paciente, "agenda")} />
+      </AppShell>
     );
   }
 
   if (view === "configuracion") {
     return (
-      <ConfiguracionPage
-        user={user}
-        goBack={() => setView("dashboard")}
-      />
+      <AppShell activeView="configuracion" onNavigate={setView}>
+        <ConfiguracionPage user={user} goBack={() => setView("dashboard")} />
+      </AppShell>
     );
   }
 
   if (view === "pre-sesion") {
     return (
-      <PreSesionPage
+      <AppShell activeView="agenda" onNavigate={setView}><PreSesionPage
         user={user}
         cita={citaPreSesion}
         iniciarSesionClinica={iniciarSesionClinica}
         goBack={() => setView("agenda")}
-      />
+      /></AppShell>
     );
   }
 
   if (view === "sesion-clinica") {
     return (
-      <SesionClinicaPage
+      <AppShell activeView="agenda" onNavigate={setView}><SesionClinicaPage
         user={user}
         cita={citaActiva}
         goBack={() => setView("agenda")}
-      />
+      /></AppShell>
     );
   }
 
@@ -426,39 +425,29 @@ export default function App() {
 
   if (view === "pacientes") {
     return (
-      <PacientesPage
-        user={user}
-        goBack={() => setView("dashboard")}
-        verFichaClinica={verFichaClinica}
-      />
+      <AppShell activeView="pacientes" onNavigate={setView}><PacientesPage user={user} goBack={() => setView("dashboard")} verFichaClinica={verFichaClinica} /></AppShell>
     );
   }
 
   if (view === "disponibilidad") {
     return (
-      <DisponibilidadPage
-        user={user}
-        goBack={() => setView("dashboard")}
-      />
+      <AppShell activeView="disponibilidad" onNavigate={setView}><DisponibilidadPage user={user} goBack={() => setView("dashboard")} /></AppShell>
     );
   }
 
   if (view === "nueva-cita") {
     return (
-      <NuevaCitaPage
-        user={user}
-        goBack={() => setView("agenda")}
-      />
+      <AppShell activeView="nueva-cita" onNavigate={setView}><NuevaCitaPage user={user} goBack={() => setView("agenda")} /></AppShell>
     );
   }
 
   if (view === "ficha-clinica") {
     return (
-      <FichaClinicaPage
+      <AppShell activeView="pacientes" onNavigate={setView}><FichaClinicaPage
         user={user}
         paciente={pacienteActivo}
-        goBack={() => setView("pacientes")}
-      />
+        goBack={() => setView(origenFichaClinica)}
+      /></AppShell>
     );
   }
 

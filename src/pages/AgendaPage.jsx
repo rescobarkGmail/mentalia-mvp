@@ -161,6 +161,7 @@ export default function AgendaPage({
   refreshKey = 0,
   goBack,
   iniciarFlujo,
+  verFichaClinica,
 }) {
   const [view, setView] = useState("week");
   const [citas, setCitas] = useState([]);
@@ -173,6 +174,15 @@ export default function AgendaPage({
   const [nuevaHora, setNuevaHora] = useState("");
   const [cargando, setCargando] = useState(false);
   const [mensajeAgenda, setMensajeAgenda] = useState(null);
+
+  useEffect(() => {
+    function cerrarMenusContextuales(event) {
+      if (event.target.closest("details")) return;
+      document.querySelectorAll("details[open]").forEach((menu) => menu.removeAttribute("open"));
+    }
+    document.addEventListener("click", cerrarMenusContextuales);
+    return () => document.removeEventListener("click", cerrarMenusContextuales);
+  }, []);
 
   const [eventosGoogleCalendar, setEventosGoogleCalendar] = useState([]);
   const [cargandoGoogleCalendar, setCargandoGoogleCalendar] = useState(false);
@@ -208,7 +218,14 @@ export default function AgendaPage({
         obtenerCitas(),
         obtenerDisponibilidad(),
       ]);
-      setCitas(citasData || []);
+      setCitas((citasData || []).map((cita) => {
+        if (citaEstaAtendida(cita)) return { ...cita, estado: "atendida" };
+        const origen = String(cita.origen || "").toLowerCase();
+        if (cita.estado === "reservada" && origen !== "reserva_publica" && origen !== "publica") {
+          return { ...cita, estado: "confirmada" };
+        }
+        return cita;
+      }));
       setDisponibilidad(disponibilidadData || []);
     } catch (error) {
       console.error("AgendaPage - error inesperado:", error);
@@ -420,6 +437,11 @@ export default function AgendaPage({
   }
 
   function abrirFlujo(cita) {
+    if (citaEstaAtendida(cita)) {
+      setMensajeAgenda({ tipo: "info", texto: "Esta cita ya fue atendida. Revisa la ficha clínica para consultar su registro." });
+      return;
+    }
+
     iniciarFlujo({
       ...cita,
 
@@ -900,6 +922,11 @@ export default function AgendaPage({
     return eventosGoogleCalendar.filter((evento) => { const inicio = evento.fecha_inicio ? new Date(evento.fecha_inicio) : null; return inicio && !Number.isNaN(inicio.getTime()) && fechaTexto(inicio) === fecha && inicio.getHours() === hora; });
   }
 
+  function citaEstaAtendida(cita) {
+    const sesion = Array.isArray(cita?.sesiones_clinicas) ? cita.sesiones_clinicas[0] : cita?.sesiones_clinicas;
+    return cita?.estado === "atendida" || sesion?.estado === "finalizada" || sesion?.estado === "actualizada";
+  }
+
   function renderHorarioAgenda() {
     const horas = Array.from({ length: 24 }, (_, i) => i);
     const slotsPorDia = diasSemana.map(slotsMentaliaDelDiaAgenda);
@@ -910,12 +937,12 @@ export default function AgendaPage({
 
   function accionAceptarReserva(cita) {
     if (!cita) return null;
-    return <div className="mt-1 grid grid-cols-2 gap-1">
-      <span className="col-span-2 text-[9px] font-black uppercase tracking-wide text-slate-500">Estado: {String(cita.estado || "").replaceAll("_", " ")}</span>
-      {cita.estado === "pendiente_confirmacion" && <button type="button" onClick={() => setCitaConfirmando(cita)} className="col-span-2 rounded bg-emerald-600 px-1 py-1 text-[9px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button>}
-      <button type="button" onClick={() => { setCitaEditando(cita); setNuevaFecha(cita.fecha?.slice(0, 10) || ""); setNuevaHora(cita.hora_inicio?.slice(0, 5) || ""); }} className="rounded border border-blue-300 bg-white px-1 py-1 text-[9px] font-black text-blue-700 hover:bg-blue-50">Reagendar</button>
-      <button type="button" onClick={() => cancelarCita(cita)} className="rounded border border-red-300 bg-white px-1 py-1 text-[9px] font-black text-red-700 hover:bg-red-50">Cancelar</button>
-    </div>;
+    const atendida = citaEstaAtendida(cita);
+    const estado = atendida ? "atendida" : String(cita.estado || "").replaceAll("_", " ");
+    const primary = cita.estado === "pendiente_confirmacion" && !atendida
+      ? <button type="button" onClick={() => setCitaConfirmando(cita)} className="col-span-2 rounded bg-emerald-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button>
+      : null;
+    return <div className="mt-1 grid grid-cols-2 gap-1"><div className="col-span-2 flex items-center justify-between"><span className="text-[9px] font-black uppercase tracking-wide text-slate-500">Estado: {estado}</span><details className="relative"><summary aria-label="Más acciones de la cita" title="Más acciones" className="grid h-6 w-6 cursor-pointer list-none place-items-center rounded-full border border-slate-300 bg-white text-sm font-black leading-none text-slate-600 hover:bg-slate-50">⋮</summary><div className="absolute right-0 z-20 mt-1 grid w-32 gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"><button type="button" onClick={() => verFichaClinica?.(cita.pacientes)} className="rounded border border-cyan-300 bg-white px-1 py-1 text-[9px] font-black text-cyan-700 hover:bg-cyan-50">Ver ficha clínica</button><button type="button" hidden={atendida} onClick={() => { setCitaEditando(cita); setNuevaFecha(cita.fecha?.slice(0, 10) || ""); setNuevaHora(cita.hora_inicio?.slice(0, 5) || ""); }} className="rounded border border-blue-300 bg-white px-1 py-1 text-[9px] font-black text-blue-700 hover:bg-blue-50">Reagendar</button><button type="button" hidden={atendida} onClick={() => cancelarCita(cita)} className="rounded border border-red-300 bg-white px-1 py-1 text-[9px] font-black text-red-700 hover:bg-red-50">Cancelar cita</button></div></details></div>{primary}</div>;
   }
 
   function renderHorarioAgendaConModalidad() {

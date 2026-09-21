@@ -107,7 +107,7 @@ async function createAppointment(req: Request, supabase: SupabaseClient, auth: A
   const overlaps = (existing ?? []).some((item) => isTime(item.hora_inicio) && isTime(item.hora_fin) && minutes(horaInicio) < minutes(item.hora_fin) && minutes(horaFin) > minutes(item.hora_inicio));
   if (overlaps) throw new HttpError(409, "SLOT_ALREADY_BOOKED", "Ese horario se superpone con una cita existente.");
 
-  const { data: appointment, error: insertError } = await supabase.from("citas").insert({ profesional_id: auth.userId, paciente_id: pacienteId, fecha, hora_inicio: horaInicio, hora_fin: horaFin, estado: "reservada", origen: "Mentalia" }).select("*").single();
+  const { data: appointment, error: insertError } = await supabase.from("citas").insert({ profesional_id: auth.userId, paciente_id: pacienteId, fecha, hora_inicio: horaInicio, hora_fin: horaFin, estado: "confirmada", origen: "Mentalia" }).select("*").single();
   if (insertError) throw new HttpError(500, "APPOINTMENT_CREATE_FAILED", "No fue posible crear la cita.");
   return appointment;
 }
@@ -235,7 +235,8 @@ async function confirmAppointment(supabase: SupabaseClient, auth: AuthContext, a
 async function listAppointments(supabase: SupabaseClient, auth: AuthContext) {
   const { data, error } = await supabase.from("citas").select(`
     *,
-    pacientes (id, nombres, apellidos, identificador, email, telefono)
+    pacientes (id, nombres, apellidos, identificador, email, telefono),
+    sesiones_clinicas (id, estado)
   `).eq("profesional_id", auth.userId).order("fecha", { ascending: true }).order("hora_inicio", { ascending: true });
   if (error) { console.error(JSON.stringify({ scope: "listAppointments", error: error.message, details: error.details, hint: error.hint })); throw new HttpError(500, "APPOINTMENTS_LIST_FAILED", "No fue posible cargar las citas."); }
   return data ?? [];
@@ -453,7 +454,7 @@ async function updatePatient(req: Request, supabase: SupabaseClient, auth: AuthC
 
 async function listPatientConsents(supabase: SupabaseClient, auth: AuthContext, patientId: string) {
   if (!patientId) throw new HttpError(400, "INVALID_PATIENT_ID", "Falta el identificador del paciente.");
-  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
+  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id,nombres,apellidos,email").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
   if (patientError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible validar el paciente.");
   if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
   const { data, error } = await supabase.from("consentimientos_paciente").select("id,paciente_id,codigo,estado,version,texto_snapshot,solicitud_id,otorgado_en,revocado_en,respondido_en,canal,fecha_crea,fecha_actualiza,consentimiento_tipos(codigo,titulo,descripcion,opcional,activo)").eq("profesional_id", auth.userId).eq("paciente_id", patientId).order("codigo");
@@ -463,7 +464,7 @@ async function listPatientConsents(supabase: SupabaseClient, auth: AuthContext, 
 
 async function requestPatientConsents(supabase: SupabaseClient, auth: AuthContext, patientId: string) {
   if (!patientId) throw new HttpError(400, "INVALID_PATIENT_ID", "Falta el identificador del paciente.");
-  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
+  const { data: patient, error: patientError } = await supabase.from("pacientes").select("id,nombres,apellidos,email").eq("id", patientId).eq("profesional_id", auth.userId).maybeSingle();
   if (patientError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible validar el paciente.");
   if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
   const [{ data: types, error: typesError }, { data: current, error: currentError }] = await Promise.all([
@@ -477,7 +478,7 @@ async function requestPatientConsents(supabase: SupabaseClient, auth: AuthContex
   const tokenHash = await hashToken(token);
   const { error: requestError } = await supabase.from("consentimientos_solicitudes").insert({ id: solicitudId, profesional_id: auth.userId, paciente_id: patientId, token_hash: tokenHash, expira_en: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() });
   if (requestError) throw new HttpError(500, "CONSENTS_REQUEST_FAILED", "No fue posible crear la solicitud de consentimientos.");
-  const pending = (types ?? []).filter((type) => !["aceptado", "revocado"].includes(currentByCode.get(type.codigo))).map((type) => ({
+  const pending = (types ?? []).filter((type) => currentByCode.get(type.codigo) !== "aceptado").map((type) => ({
     profesional_id: auth.userId,
     paciente_id: patientId,
     codigo: type.codigo,
@@ -498,7 +499,17 @@ async function requestPatientConsents(supabase: SupabaseClient, auth: AuthContex
     const { error: eventError } = await supabase.from("consentimientos_paciente_eventos").insert(eventos);
     if (eventError) console.error(JSON.stringify({ scope: "requestPatientConsents.events", error: eventError.message, details: eventError.details }));
   }
-  return { solicitud_id: solicitudId, enlace_token: token, expira_en_dias: 7, consentimientos: await listPatientConsents(supabase, auth, patientId) };
+  const enlace = `${Deno.env.get("PUBLIC_APP_URL") || "http://localhost:5173"}/consentimiento/${token}`;
+  let notificationStatus = "sin_correo";
+  const patientEmail = typeof patient.email === "string" ? patient.email.trim() : "";
+  const resendKey = Deno.env.get("RESEND_API_KEY");
+  if (patientEmail && resendKey) {
+    const professional = auth.profile || {};
+    const nombreProfesional = `${professional.nombres || ""} ${professional.apellidos || ""}`.trim() || "tu profesional";
+    const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: Deno.env.get("RESEND_FROM") || "FluyePro <onboarding@resend.dev>", to: [patientEmail], reply_to: "contacto@fluyepro.cl", subject: "Revisa tus consentimientos de atención", html: `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6"><p>Hola ${escapeHtml(patient.nombres || "")},</p><p>${escapeHtml(nombreProfesional)} solicita que revises tus consentimientos de atención.</p><p><a href="${enlace}" style="display:inline-block;background:#18AFC1;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold">Revisar mis consentimientos</a></p><p>El enlace estará disponible por 7 días.</p></div>` }) });
+    notificationStatus = response.ok ? "enviado" : "fallido";
+  }
+  return { solicitud_id: solicitudId, enlace_token: token, enlace, expira_en_dias: 7, notification_status: notificationStatus, consentimientos: await listPatientConsents(supabase, auth, patientId) };
 }
 
 async function getPublicConsentRequest(supabase: SupabaseClient, token: string) {
@@ -507,24 +518,35 @@ async function getPublicConsentRequest(supabase: SupabaseClient, token: string) 
   const { data: request, error } = await supabase.from("consentimientos_solicitudes").select("id,profesional_id,paciente_id,expira_en,respondida_en,pacientes(nombres,apellidos),profesional(nombres,apellidos)").eq("token_hash", tokenHash).maybeSingle();
   if (error || !request) throw new HttpError(404, "CONSENT_REQUEST_NOT_FOUND", "La solicitud no existe o ya no está disponible.");
   if (new Date(request.expira_en).getTime() < Date.now()) throw new HttpError(410, "CONSENT_REQUEST_EXPIRED", "La solicitud de consentimiento expiró.");
-  const { data: consents, error: consentError } = await supabase.from("consentimientos_paciente").select("id,codigo,estado,version,texto_snapshot,consentimiento_tipos(codigo,titulo,descripcion,opcional)").eq("solicitud_id", request.id).order("codigo");
+  // El portal debe mostrar el conjunto completo de consentimientos vigentes
+  // del paciente con este profesional, no solo los incluidos en la última solicitud.
+  const { data: consents, error: consentError } = await supabase.from("consentimientos_paciente").select("id,codigo,estado,version,texto_snapshot,solicitud_id,otorgado_en,revocado_en,respondido_en,consentimiento_tipos(codigo,titulo,descripcion,opcional)").eq("profesional_id", request.profesional_id).eq("paciente_id", request.paciente_id).order("codigo");
   if (consentError) throw new HttpError(500, "CONSENTS_LOOKUP_FAILED", "No fue posible cargar los consentimientos.");
-  return { solicitud_id: request.id, expira_en: request.expira_en, respondida_en: request.respondida_en, paciente: request.pacientes, profesional: request.profesional, consentimientos: consents ?? [] };
+  return { solicitud_id: request.id, profesional_id: request.profesional_id, paciente_id: request.paciente_id, expira_en: request.expira_en, respondida_en: request.respondida_en, paciente: request.pacientes, profesional: request.profesional, consentimientos: consents ?? [] };
 }
 
 async function respondPublicConsentRequest(req: Request, supabase: SupabaseClient, token: string) {
   const request = await getPublicConsentRequest(supabase, token);
   let body: Record<string, unknown>; try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
-  if (!body.respuestas || typeof body.respuestas !== "object") throw new HttpError(400, "INVALID_CONSENT_RESPONSE", "Debes indicar las respuestas de consentimiento.");
-  const respuestas = body.respuestas as Record<string, unknown>;
-  const allowed = new Set(["aceptado", "rechazado"]);
   const now = new Date().toISOString();
+  const revocar = Array.isArray(body.revocar) ? body.revocar.map(String) : [];
+  for (const codigo of revocar) {
+    const consent = request.consentimientos.find((item) => item.codigo === codigo);
+    if (!consent || consent.estado !== "aceptado") continue;
+    const { error } = await supabase.from("consentimientos_paciente").update({ estado: "revocado", revocado_en: now, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null }).eq("solicitud_id", request.solicitud_id).eq("codigo", codigo);
+    if (error) throw new HttpError(500, "CONSENT_REVOKE_FAILED", "No fue posible revocar el consentimiento.");
+    await supabase.from("consentimientos_paciente_eventos").insert({ consentimiento_id: consent.id, estado_anterior: consent.estado, estado_nuevo: "revocado", version: consent.version, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null });
+  }
+  const respuestas = (body.respuestas && typeof body.respuestas === "object") ? body.respuestas as Record<string, unknown> : {};
+  const allowed = new Set(["aceptado", "rechazado"]);
   for (const consent of request.consentimientos) {
     const respuesta = respuestas[consent.codigo];
-    if (!allowed.has(String(respuesta)) || consent.estado === "aceptado" || consent.estado === "revocado") continue;
-    const { error } = await supabase.from("consentimientos_paciente").update({ estado: String(respuesta), respondido_en: now, otorgado_en: respuesta === "aceptado" ? now : null, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null }).eq("solicitud_id", request.solicitud_id).eq("codigo", consent.codigo);
+    if (!allowed.has(String(respuesta)) || consent.estado === "revocado") continue;
+    const revocando = consent.estado === "aceptado" && String(respuesta) === "rechazado";
+    const estadoNuevo = revocando ? "revocado" : String(respuesta);
+    const { error } = await supabase.from("consentimientos_paciente").update({ estado: estadoNuevo, respondido_en: now, otorgado_en: estadoNuevo === "aceptado" ? now : null, revocado_en: estadoNuevo === "revocado" ? now : null, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null }).eq("profesional_id", request.profesional_id).eq("paciente_id", request.paciente_id).eq("codigo", consent.codigo);
     if (error) throw new HttpError(500, "CONSENT_RESPONSE_FAILED", "No fue posible registrar la respuesta.");
-    await supabase.from("consentimientos_paciente_eventos").insert({ consentimiento_id: consent.id, estado_anterior: consent.estado, estado_nuevo: String(respuesta), version: consent.version, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null });
+    await supabase.from("consentimientos_paciente_eventos").insert({ consentimiento_id: consent.id, estado_anterior: consent.estado, estado_nuevo: estadoNuevo, version: consent.version, canal: "portal", ip_respuesta: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null, user_agent_respuesta: req.headers.get("user-agent") || null });
   }
   await supabase.from("consentimientos_solicitudes").update({ respondida_en: now }).eq("id", request.solicitud_id);
   return await getPublicConsentRequest(supabase, token);
@@ -579,10 +601,18 @@ async function saveClinicalSession(req: Request, supabase: SupabaseClient, auth:
   const allowed = ["estado", "storage_provider", "storage_file_id", "storage_path", "clinical_data_external", "motivo_consulta", "notas_clinicas", "observaciones", "tareas_acuerdos", "resumen_sesion", "foco_trabajado", "proxima_sesion"];
   const record: Record<string, unknown> = { cita_id: citaId, profesional_id: auth.userId, paciente_id: patientId };
   for (const key of allowed) if (key in body) record[key] = body[key];
-  const { data: existing, error: findError } = await supabase.from("sesiones_clinicas").select("id").eq("profesional_id", auth.userId).eq("cita_id", citaId).maybeSingle();
+  const { data: existing, error: findError } = await supabase
+    .from("sesiones_clinicas")
+    .select("id, storage_provider, storage_file_id, clinical_data_external")
+    .eq("profesional_id", auth.userId)
+    .eq("cita_id", citaId)
+    .order("fecha_crea", { ascending: false })
+    .limit(1)
+    .maybeSingle();
   if (findError) throw new HttpError(500, "CLINICAL_SESSION_LOOKUP_FAILED", "No fue posible validar la sesión clínica.");
   let data; let error;
-  if (existing) ({ data, error } = await supabase.from("sesiones_clinicas").update(record).eq("id", existing.id).eq("profesional_id", auth.userId).select("*").single());
+  const cambiaFuente = existing && existing.storage_provider && record.storage_provider && existing.storage_provider !== record.storage_provider;
+  if (existing && !cambiaFuente) ({ data, error } = await supabase.from("sesiones_clinicas").update(record).eq("id", existing.id).eq("profesional_id", auth.userId).select("*").single());
   else ({ data, error } = await supabase.from("sesiones_clinicas").insert(record).select("*").single());
   if (error) { console.error(JSON.stringify({ scope: "saveClinicalSession", error: error.message, details: error.details, hint: error.hint })); throw new HttpError(500, "CLINICAL_SESSION_SAVE_FAILED", "No fue posible guardar la sesión clínica."); }
   return data;
