@@ -1,3 +1,5 @@
+import DocumentoCampos from "../components/DocumentoCampos";
+import { documentoParaGuardar, errorDocumento } from "../../supabase/functions/_shared/documento.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   buscarPacientePublico,
@@ -288,6 +290,7 @@ export default function ReservarHoraPage({
   const rutActualRef = useRef("");
 
   const [identificador, setIdentificador] = useState("");
+  const [documento, setDocumento] = useState({ tipo_identificador: "", pais_emisor_identificador: "" });
   const [nombres, setNombres] = useState("");
   const [apellidos, setApellidos] = useState("");
   const [email, setEmail] = useState("");
@@ -595,7 +598,7 @@ export default function ReservarHoraPage({
   }
 
   function manejarCambioRut(valor) {
-    const formateado = formatearRutChileno(valor);
+    const formateado = documento.tipo_identificador === "rut" ? formatearRutChileno(valor) : valor;
 
     rutActualRef.current = formateado;
     setIdentificador(formateado);
@@ -608,6 +611,7 @@ export default function ReservarHoraPage({
   }
 
   function manejarBlurRut() {
+    if (documento.tipo_identificador !== "rut") return;
     const rutFormateado = formatearRutChileno(identificador);
 
     rutActualRef.current = rutFormateado;
@@ -636,8 +640,7 @@ export default function ReservarHoraPage({
   function validarFormulario() {
     const errores = {};
 
-    const rutFormateado = formatearRutChileno(identificador);
-    const rutError = obtenerMensajeErrorRut(rutFormateado);
+    const rutError = !identificador.trim() ? "Ingresa tu número de documento." : errorDocumento({ ...documento, identificador }, false);
     if (rutError) errores.identificador = rutError;
 
     if (!normalizarTexto(nombres)) errores.nombres = "Ingresa tu nombre.";
@@ -651,8 +654,8 @@ export default function ReservarHoraPage({
 
     if (!normalizarTexto(telefono)) {
       errores.telefono = "Ingresa tu celular.";
-    } else if (!validarCelularChileno(telefono)) {
-      errores.telefono = "Ingresa un celular chileno válido. Ejemplo: +56912345678.";
+    } else if (!/^\+?[0-9 ()-]{7,25}$/.test(telefono)) {
+      errores.telefono = "Ingresa un teléfono válido con su código de país.";
     }
 
     if (!aceptaCondiciones) {
@@ -675,8 +678,8 @@ export default function ReservarHoraPage({
     setReservando(true);
     setError("");
 
-    const rutFormateado = formatearRutChileno(identificador);
-    const telefonoNormalizado = normalizarTelefonoChileno(telefono);
+    const rutFormateado = documentoParaGuardar(identificador, documento.tipo_identificador, documento.pais_emisor_identificador);
+    const telefonoNormalizado = telefono.trim();
 
     try {
       const data = await reservarHoraPublica({
@@ -688,6 +691,7 @@ export default function ReservarHoraPage({
         apellidos: normalizarTexto(apellidos),
         email: normalizarTexto(email).toLowerCase(),
         telefono: telefonoNormalizado,
+        ...documento,
         identificador: rutFormateado,
         primera_atencion: primeraAtencion || null,
         canal_contacto: canalContacto,
@@ -927,16 +931,17 @@ export default function ReservarHoraPage({
 
             <h2 className="text-2xl font-black">Tus datos</h2>
             <p className="mb-5 mt-1 text-sm text-slate-500">
-              Ingresa primero tu RUT. Si ya eres paciente, completaremos tus datos administrativos guardados.
+              Selecciona el documento y el país que lo emitió. Puedes reservar con RUT, pasaporte u otro documento.
             </p>
 
             <div className="space-y-4">
+              <DocumentoCampos datos={documento} onChange={(datos) => { setDocumento(datos); setIdentificador(""); rutActualRef.current = ""; limpiarDatosPacientePorCambioRut(); }} />
               <label className="block">
                 <span className="mb-1 block text-sm font-black text-slate-700">
-                  RUT chileno *
+                  Número de documento *
                 </span>
                 <input
-                  placeholder="12.345.678-K"
+                  placeholder="Número de documento"
                   value={identificador}
                   onChange={(e) => manejarCambioRut(e.target.value)}
                   onBlur={manejarBlurRut}
@@ -986,10 +991,10 @@ export default function ReservarHoraPage({
               />
 
               <CampoTexto
-                label="Celular chileno *"
+                label="Teléfono con código de país *"
                 value={telefono}
-                onChange={(valor) => setTelefono(normalizarTelefonoChileno(valor))}
-                onBlur={() => setTelefono(normalizarTelefonoChileno(telefono))}
+                onChange={(valor) => setTelefono(valor)}
+                onBlur={() => setTelefono(telefono.trim())}
                 error={erroresFormulario.telefono}
                 placeholder="+56912345678"
               />

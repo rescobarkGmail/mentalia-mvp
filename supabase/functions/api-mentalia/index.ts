@@ -1,3 +1,5 @@
+import { documentoParaGuardar, errorDocumento } from "../_shared/documento.js";
+import { normalizarRut, rutParaGuardar } from "../_shared/rut.js";
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -12,7 +14,7 @@ async function authenticate(req: Request, supabase: SupabaseClient): Promise<Aut
   const header = req.headers.get("Authorization"); if (!header?.startsWith("Bearer ")) throw new HttpError(401, "AUTH_REQUIRED", "Se requiere autenticación.");
   const token = header.slice(7).trim(); if (!token) throw new HttpError(401, "AUTH_REQUIRED", "Token inválido.");
   const { data: { user }, error } = await supabase.auth.getUser(token); if (error || !user) throw new HttpError(401, "AUTH_INVALID", "La sesión no es válida.");
-  const { data: profile, error: profileError } = await supabase.from("profesional").select("id,nombres,apellidos,email,vigente").eq("id", user.id).maybeSingle();
+  const { data: profile, error: profileError } = await supabase.from("profesional").select("id,nombres,apellidos,email,vigente,duracion_sesion_minutos").eq("id", user.id).maybeSingle();
   if (profileError) { console.error(JSON.stringify({ scope: "authenticate.profile", error: profileError.message, details: profileError.details, hint: profileError.hint })); throw new HttpError(500, "PROFILE_LOOKUP_FAILED", "No fue posible validar el perfil profesional."); }
   if (!profile || profile.vigente === false) throw new HttpError(403, "PROFESSIONAL_NOT_ACTIVE", "El profesional no está habilitado.");
   return { userId: user.id, email: user.email ?? null, profile };
@@ -52,25 +54,57 @@ async function listPublicBookingData(url: URL, supabase: SupabaseClient) {
 async function lookupPublicPatient(req: Request, supabase: SupabaseClient) {
   let body: Record<string, unknown>; try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
   const slug = publicSlug(body.slug_publico);
-  const rut = typeof body.rut === "string" ? body.rut.trim() : "";
+  const rut = typeof body.rut === "string" ? rutParaGuardar(body.rut) : "";
   if (!rut) throw new HttpError(400, "INVALID_PATIENT_IDENTIFIER", "El RUT es obligatorio.");
-  await getPublicProfessional(supabase, slug);
-  const { data, error } = await supabase.rpc("buscar_paciente_publico_por_rut", { p_slug_publico: slug, p_rut: rut });
+  const professional = await getPublicProfessional(supabase, slug);
+  const rutNormalizado = normalizarRut(rut);
+  const { data, error } = await supabase.from("pacientes").select("nombres,apellidos,email,telefono,identificador,tipo_identificador,pais_emisor_identificador")
+    .eq("profesional_id", professional.id)
+    .eq("activo", true)
+    .limit(500);
   if (error) throw new HttpError(500, "PUBLIC_PATIENT_LOOKUP_FAILED", "No fue posible buscar los datos del paciente.");
-  return Array.isArray(data) ? (data[0] ?? null) : null;
+  const paciente = (data || []).find((item) => {
+    const tipo = item.tipo_identificador || "rut";
+    const pais = item.pais_emisor_identificador || "CL";
+    return tipo === "rut" && pais === "CL" && normalizarRut(item.identificador) === rutNormalizado;
+  });
+  return paciente ? [{ nombres: paciente.nombres, apellidos: paciente.apellidos, email: paciente.email, telefono: paciente.telefono }] : [];
+
 }
 
 async function createPublicBooking(req: Request, supabase: SupabaseClient) {
   let body: Record<string, unknown>; try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
+  const documento = { ...body, tipo_identificador: body.tipo_identificador ?? "rut", pais_emisor_identificador: body.pais_emisor_identificador ?? "CL" };
+  const docError = errorDocumento(documento, false);
+  if (docError) throw new HttpError(400, "INVALID_DOCUMENT", docError);
   const slug = publicSlug(body.slug_publico);
   const required = ["fecha", "hora_inicio", "hora_fin", "nombres", "apellidos", "email", "telefono"];
   if (required.some((key) => typeof body[key] !== "string" || !(body[key] as string).trim())) throw new HttpError(400, "INVALID_PUBLIC_BOOKING", "Completa todos los datos obligatorios de la reserva.");
   if (!isDate(body.fecha) || !isTime(body.hora_inicio) || !isTime(body.hora_fin)) throw new HttpError(400, "INVALID_PUBLIC_BOOKING_TIME", "La fecha y el horario seleccionados no son válidos.");
   const modalidad = typeof body.modalidad === "string" && ["presencial", "online"].includes(body.modalidad) ? body.modalidad : "presencial";
   await getPublicProfessional(supabase, slug);
-  const { data, error } = await supabase.rpc("reservar_hora_publica", { p_slug_publico: slug, p_fecha: body.fecha, p_hora_inicio: body.hora_inicio, p_hora_fin: body.hora_fin, p_nombres: body.nombres, p_apellidos: body.apellidos, p_email: body.email, p_telefono: body.telefono, p_identificador: body.identificador || null, p_primera_atencion: body.primera_atencion || null, p_canal_contacto: body.canal_contacto || null, p_modalidad: modalidad });
+  const { data, error } = await supabase.rpc("reservar_hora_publica_documento", { p_slug_publico: slug, p_fecha: body.fecha, p_hora_inicio: body.hora_inicio, p_hora_fin: body.hora_fin, p_nombres: body.nombres, p_apellidos: body.apellidos, p_email: body.email, p_telefono: body.telefono, p_identificador: documentoParaGuardar(body.identificador, documento.tipo_identificador, documento.pais_emisor_identificador) || null, p_primera_atencion: body.primera_atencion || null, p_canal_contacto: body.canal_contacto || null, p_modalidad: modalidad, p_tipo_identificador: documento.tipo_identificador, p_pais_emisor_identificador: documento.pais_emisor_identificador });
   if (error) throw new HttpError(409, "PUBLIC_BOOKING_FAILED", error.message || "No fue posible confirmar la reserva.");
   return Array.isArray(data) ? (data[0] ?? data) : data;
+}
+
+async function createQuickAttention(req: Request, supabase: SupabaseClient) {
+  let body: Record<string, unknown>;
+  try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
+  if (typeof body.solicitud_id !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(body.solicitud_id)
+    || !isDate(body.fecha) || !isTime(body.hora_inicio) || !Number.isInteger(body.duracion_minutos)
+    || typeof body.modalidad !== "string" || !["online", "presencial", "domicilio"].includes(body.modalidad)) {
+    throw new HttpError(400, "QUICK_INVALID", "Revisa los datos de la atención.");
+  }
+  const { data, error } = await supabase.rpc("crear_atencion_rapida", { p_datos: body });
+  if (error) {
+    const match = error.message.match(/^(QUICK_[A-Z_]+):\s*(.*)$/);
+    if (match) throw new HttpError(match[1] === "QUICK_AUTH" ? 403 : match[1] === "QUICK_CONFLICT" || match[1] === "QUICK_DUPLICATE" ? 409 : 400, match[1], match[2]);
+    if (error.code === "23505") throw new HttpError(409, "QUICK_DUPLICATE", "Ya existe un registro con esos datos. Revisa el paciente y el horario.");
+    if (error.code === "PGRST202") throw new HttpError(503, "QUICK_NOT_INSTALLED", "Atención rápida requiere aplicar la migración de base de datos.");
+    throw new HttpError(500, "QUICK_CREATE_FAILED", "No fue posible crear la atención. Reintenta la misma operación.");
+  }
+  return data;
 }
 
 async function createAppointment(req: Request, supabase: SupabaseClient, auth: AuthContext) {
@@ -148,7 +182,8 @@ async function rescheduleAppointment(req: Request, supabase: SupabaseClient, aut
   const { data: appointment, error: updateError } = await supabase.from("citas").update({ fecha, hora_inicio: horaInicio, hora_fin: horaFin, estado: "reprogramada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, email, telefono)").single();
   if (updateError) throw new HttpError(500, "APPOINTMENT_RESCHEDULE_FAILED", "No fue posible reprogramar la cita.");
   const notificationStatus = await enviarCorreoCambioReserva(appointment, auth, supabase, "reprogramada");
-  return { ...appointment, notification_status: notificationStatus };
+  const whatsappStatus = await enviarWhatsAppReserva(appointment, auth, supabase, "reprogramada");
+  return { ...appointment, notification_status: notificationStatus, whatsapp_notification_status: whatsappStatus };
 }
 
 async function cancelAppointment(supabase: SupabaseClient, auth: AuthContext, appointmentId: string) {
@@ -160,7 +195,8 @@ async function cancelAppointment(supabase: SupabaseClient, auth: AuthContext, ap
   const { data: appointment, error: updateError } = await supabase.from("citas").update({ estado: "cancelada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, email, telefono)").single();
   if (updateError) throw new HttpError(500, "APPOINTMENT_CANCEL_FAILED", "No fue posible cancelar la cita.");
   const notificationStatus = await enviarCorreoCambioReserva(appointment, auth, supabase, "cancelada");
-  return { ...appointment, notification_status: notificationStatus };
+  const whatsappStatus = await enviarWhatsAppReserva(appointment, auth, supabase, "cancelada");
+  return { ...appointment, notification_status: notificationStatus, whatsapp_notification_status: whatsappStatus };
 }
 
 function escapeHtml(value: unknown) {
@@ -171,20 +207,295 @@ function aplicarPlantillaCorreo(template: string, values: Record<string, string>
   return template.replace(/{{\s*([a-z_]+)\s*}}/gi, (_, key) => values[key.toLowerCase()] ?? "");
 }
 
+function nombrePaciente(patient: Record<string, any> | null | undefined) {
+  return `${patient?.nombres || ""} ${patient?.apellidos || ""}`.trim() || "Paciente";
+}
+
+function nombreProfesional(auth: AuthContext) {
+  return `${auth.profile?.nombres || ""} ${auth.profile?.apellidos || ""}`.trim() || "tu profesional";
+}
+
+function etiquetaFecha(fecha: unknown) {
+  return isDate(fecha) ? new Intl.DateTimeFormat("es-CL", { dateStyle: "long", timeZone: "America/Santiago" }).format(new Date(`${fecha}T12:00:00-04:00`)) : String(fecha ?? "");
+}
+
+function valoresCita(appointment: Record<string, any>, auth: AuthContext) {
+  const patient = appointment.pacientes;
+  return {
+    nombre_paciente: nombrePaciente(patient),
+    nombre_profesional: nombreProfesional(auth),
+    fecha: etiquetaFecha(appointment.fecha),
+    hora_inicio: String(appointment.hora_inicio || "").slice(0, 5),
+    hora_fin: String(appointment.hora_fin || "").slice(0, 5),
+    modalidad: String(appointment.modalidad || "presencial"),
+  };
+}
+
+function authDesdeCita(appointment: Record<string, any>): AuthContext {
+  return {
+    userId: String(appointment.profesional_id || ""),
+    email: appointment.profesional?.email ?? null,
+    profile: appointment.profesional ?? null,
+  };
+}
+
+function normalizarTelefonoWhatsApp(value: unknown) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("56") && digits.length >= 11) return digits;
+  if (digits.length === 9 && digits.startsWith("9")) return `56${digits}`;
+  if (digits.length >= 8 && digits.length <= 15) return digits;
+  return "";
+}
+
+async function pacienteAutorizaWhatsApp(supabase: SupabaseClient, auth: AuthContext, patientId: unknown) {
+  if (typeof patientId !== "string" || !patientId) return false;
+  const { data, error } = await supabase
+    .from("consentimientos_paciente")
+    .select("estado")
+    .eq("profesional_id", auth.userId)
+    .eq("paciente_id", patientId)
+    .eq("codigo", "recordatorios_whatsapp")
+    .maybeSingle();
+  if (error) {
+    console.error(JSON.stringify({ scope: "whatsappConsent.lookup", error: error.message, details: error.details }));
+    return false;
+  }
+  return data?.estado === "aceptado";
+}
+
+async function enviarPlantillaWhatsApp(to: string, templateName: string, values: string[]) {
+  const token = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
+  const phoneNumberId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
+  if (!token || !phoneNumberId) return "no_configurado";
+
+  const languageCode = Deno.env.get("WHATSAPP_TEMPLATE_LANGUAGE") || "es_CL";
+  const body = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: languageCode },
+      components: [
+        {
+          type: "body",
+          parameters: values.map((value) => ({ type: "text", text: value || "-" })),
+        },
+      ],
+    },
+  };
+
+  try {
+    const response = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error(JSON.stringify({ scope: "sendWhatsApp.meta", status: response.status, detail }));
+      return "fallido";
+    }
+    return "enviado";
+  } catch (error) {
+    console.error(JSON.stringify({ scope: "sendWhatsApp.network", error: error instanceof Error ? error.message : String(error) }));
+    return "fallido";
+  }
+}
+
+async function enviarWhatsAppReserva(appointment: Record<string, any>, auth: AuthContext, supabase: SupabaseClient, tipo: "confirmada" | "reprogramada" | "cancelada") {
+  const patient = appointment.pacientes;
+  const telefono = normalizarTelefonoWhatsApp(patient?.telefono);
+  if (!telefono) return "sin_telefono";
+
+  const settingsColumns = tipo === "confirmada" ? "confirmacion_reserva_whatsapp" : "cambios_reserva_whatsapp";
+  const { data: settings, error: settingsError } = await supabase.from("notificaciones_config").select(settingsColumns).eq("profesional_id", auth.userId).maybeSingle();
+  if (settingsError) console.error(JSON.stringify({ scope: "sendWhatsApp.settings", error: settingsError.message }));
+  if (tipo === "confirmada" && settings?.confirmacion_reserva_whatsapp === false) return "desactivado";
+  if (tipo !== "confirmada" && settings?.cambios_reserva_whatsapp === false) return "desactivado";
+
+  const autorizado = await pacienteAutorizaWhatsApp(supabase, auth, patient?.id || appointment.paciente_id);
+  if (!autorizado) return "sin_consentimiento";
+
+  const values = valoresCita(appointment, auth);
+  const templateName = tipo === "cancelada"
+    ? Deno.env.get("WHATSAPP_TEMPLATE_CANCELLED") || "reserva_cancelada"
+    : tipo === "reprogramada"
+    ? Deno.env.get("WHATSAPP_TEMPLATE_RESCHEDULED") || "reserva_reagendada"
+    : Deno.env.get("WHATSAPP_TEMPLATE_CONFIRMED") || "reserva_confirmada";
+
+  if (tipo === "cancelada") {
+    return await enviarPlantillaWhatsApp(telefono, templateName, [values.nombre_paciente, values.nombre_profesional, values.fecha, values.hora_inicio]);
+  }
+
+  if (tipo === "confirmada") {
+    return await enviarPlantillaWhatsApp(telefono, templateName, [
+      values.nombre_paciente,
+      values.nombre_profesional,
+      values.fecha,
+      values.hora_inicio,
+      values.modalidad,
+    ]);
+  }
+
+  return await enviarPlantillaWhatsApp(telefono, templateName, [
+    values.nombre_paciente,
+    values.nombre_profesional,
+    values.fecha,
+    values.hora_inicio,
+    values.modalidad,
+  ]);
+}
+
+function requireInternalSecret(req: Request) {
+  const expected = Deno.env.get("INTERNAL_CRON_SECRET");
+  if (!expected) throw new HttpError(503, "INTERNAL_SECRET_NOT_CONFIGURED", "Falta configurar el secreto interno del scheduler.");
+  const received = req.headers.get("x-internal-secret") || req.headers.get("x-cron-secret") || "";
+  if (received !== expected) throw new HttpError(401, "INTERNAL_AUTH_INVALID", "No autorizado.");
+}
+
+function addDaysIso(date: string, days: number) {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function santiagoWallClockMinutes(date: string, time: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = String(time || "00:00").slice(0, 5).split(":").map(Number);
+  return Date.UTC(year, month - 1, day, hour || 0, minute || 0) / 60000;
+}
+
+function nowSantiagoWallClockMinutes() {
+  const now = localSantiago();
+  return santiagoWallClockMinutes(now.date, now.time);
+}
+
+async function registrarIntentoNotificacion(supabase: SupabaseClient, appointment: Record<string, any>, tipo: string, plantilla: string, destinatario: string | null) {
+  const { data, error } = await supabase.from("notificaciones_envios").insert({
+    profesional_id: appointment.profesional_id,
+    paciente_id: appointment.paciente_id,
+    cita_id: appointment.id,
+    canal: "whatsapp",
+    tipo,
+    estado: "procesando",
+    proveedor: "meta_whatsapp",
+    destinatario,
+    plantilla,
+  }).select("id").maybeSingle();
+  if (error) {
+    if (error.code === "23505") return null;
+    console.error(JSON.stringify({ scope: "reminder.insertAttempt", error: error.message, details: error.details }));
+    throw new HttpError(500, "REMINDER_ATTEMPT_FAILED", "No fue posible registrar el intento de notificación.");
+  }
+  return data?.id ?? null;
+}
+
+async function actualizarIntentoNotificacion(supabase: SupabaseClient, id: string, estado: string, detalle?: string) {
+  const patch: Record<string, unknown> = { estado, fecha_actualiza: new Date().toISOString() };
+  if (estado === "enviado") patch.enviado_en = new Date().toISOString();
+  if (detalle) patch.detalle_error = detalle;
+  const { error } = await supabase.from("notificaciones_envios").update(patch).eq("id", id);
+  if (error) console.error(JSON.stringify({ scope: "reminder.updateAttempt", error: error.message, details: error.details }));
+}
+
+async function enviarWhatsAppRecordatorio(supabase: SupabaseClient, appointment: Record<string, any>, tipo: "recordatorio_27h" | "recordatorio_60m") {
+  const auth = authDesdeCita(appointment);
+  const patient = appointment.pacientes;
+  const telefono = normalizarTelefonoWhatsApp(patient?.telefono);
+  const templateName = tipo === "recordatorio_27h"
+    ? Deno.env.get("WHATSAPP_TEMPLATE_REMINDER_27H") || "recordatorio_27h"
+    : Deno.env.get("WHATSAPP_TEMPLATE_REMINDER_60M") || "recordatorio_60min";
+  const intentoId = await registrarIntentoNotificacion(supabase, appointment, tipo, templateName, telefono || null);
+  if (!intentoId) return "duplicado";
+  if (!telefono) { await actualizarIntentoNotificacion(supabase, intentoId, "omitido", "sin_telefono"); return "sin_telefono"; }
+
+  const autorizado = await pacienteAutorizaWhatsApp(supabase, auth, patient?.id || appointment.paciente_id);
+  if (!autorizado) { await actualizarIntentoNotificacion(supabase, intentoId, "omitido", "sin_consentimiento"); return "sin_consentimiento"; }
+
+  const values = valoresCita(appointment, auth);
+  const params = tipo === "recordatorio_27h"
+    ? [values.nombre_paciente, values.nombre_profesional, values.fecha, values.hora_inicio, values.modalidad]
+    : [values.nombre_paciente, values.nombre_profesional, values.hora_inicio, values.modalidad];
+  const status = await enviarPlantillaWhatsApp(telefono, templateName, params);
+  await actualizarIntentoNotificacion(supabase, intentoId, status === "enviado" ? "enviado" : "fallido", status === "enviado" ? undefined : status);
+  return status;
+}
+
+async function procesarRecordatoriosWhatsApp(req: Request, supabase: SupabaseClient) {
+  requireInternalSecret(req);
+  const now = localSantiago();
+  const lookahead = Number(Deno.env.get("REMINDER_LOOKAHEAD_MINUTES") || 15);
+  const nowMinutes = nowSantiagoWallClockMinutes();
+  const to = addDaysIso(now.date, 2);
+  const { data: appointments, error } = await supabase.from("citas").select(`
+    id, profesional_id, paciente_id, fecha, hora_inicio, hora_fin, estado, modalidad,
+    pacientes (id, nombres, apellidos, telefono)
+  `).gte("fecha", now.date).lte("fecha", to).in("estado", ["confirmada", "reprogramada"]);
+  if (error) {
+    console.error(JSON.stringify({ scope: "reminders.lookup", error: error.message, details: error.details, hint: error.hint }));
+    throw new HttpError(500, "REMINDERS_LOOKUP_FAILED", "No fue posible buscar recordatorios pendientes.");
+  }
+
+  const resumen = { evaluadas: 0, enviadas: 0, omitidas: 0, fallidas: 0, duplicadas: 0, detalles: [] as Array<Record<string, unknown>> };
+  const settingsCache = new Map<string, Record<string, any> | null>();
+  async function getSettings(profesionalId: string) {
+    if (settingsCache.has(profesionalId)) return settingsCache.get(profesionalId);
+    const { data, error: settingsError } = await supabase.from("notificaciones_config")
+      .select("recordatorio_whatsapp_activo,horas_antes_recordatorio_email,minutos_antes_recordatorio_whatsapp")
+      .eq("profesional_id", profesionalId)
+      .maybeSingle();
+    if (settingsError) console.error(JSON.stringify({ scope: "reminders.settings", profesional_id: profesionalId, error: settingsError.message }));
+    settingsCache.set(profesionalId, data ?? null);
+    return data ?? null;
+  }
+  const professionalCache = new Map<string, Record<string, any> | null>();
+  async function getProfessional(profesionalId: string) {
+    if (professionalCache.has(profesionalId)) return professionalCache.get(profesionalId);
+    const { data, error: professionalError } = await supabase.from("profesional")
+      .select("id,nombres,apellidos,email")
+      .eq("id", profesionalId)
+      .maybeSingle();
+    if (professionalError) console.error(JSON.stringify({ scope: "reminders.professional", profesional_id: profesionalId, error: professionalError.message }));
+    professionalCache.set(profesionalId, data ?? null);
+    return data ?? null;
+  }
+  for (const appointment of appointments ?? []) {
+    const settings = await getSettings(appointment.profesional_id);
+    if (settings?.recordatorio_whatsapp_activo !== true) continue;
+    appointment.profesional = await getProfessional(appointment.profesional_id);
+    const citaMinutes = santiagoWallClockMinutes(appointment.fecha, appointment.hora_inicio);
+    const diff = citaMinutes - nowMinutes;
+    const reminders = [
+      { tipo: "recordatorio_27h" as const, target: Number(Deno.env.get("WHATSAPP_REMINDER_27H_MINUTES") || 1620) },
+      { tipo: "recordatorio_60m" as const, target: Number(settings?.minutos_antes_recordatorio_whatsapp ?? 60) },
+    ];
+    for (const reminder of reminders) {
+      if (diff < reminder.target || diff >= reminder.target + lookahead) continue;
+      resumen.evaluadas += 1;
+      const status = await enviarWhatsAppRecordatorio(supabase, appointment, reminder.tipo);
+      if (status === "enviado") resumen.enviadas += 1;
+      else if (status === "duplicado") resumen.duplicadas += 1;
+      else if (status === "fallido" || status === "no_configurado") resumen.fallidas += 1;
+      else resumen.omitidas += 1;
+      resumen.detalles.push({ cita_id: appointment.id, tipo: reminder.tipo, status });
+    }
+  }
+  return resumen;
+}
+
 async function enviarCorreoConfirmacionReserva(appointment: Record<string, any>, auth: AuthContext, supabase: SupabaseClient) {
   const patient = appointment.pacientes;
   const email = typeof patient?.email === "string" ? patient.email.trim() : "";
   if (!email) return "sin_correo";
-  const { data: settings, error: settingsError } = await supabase.from("notificaciones_config").select("confirmacion_reserva_email").eq("profesional_id", auth.userId).maybeSingle();
+  const { data: settings, error: settingsError } = await supabase.from("notificaciones_config").select("confirmacion_reserva_email,confirmacion_reserva_email_asunto,confirmacion_reserva_email_plantilla").eq("profesional_id", auth.userId).maybeSingle();
   if (settingsError) console.error(JSON.stringify({ scope: "sendConfirmationEmail.settings", error: settingsError.message }));
   if (settings?.confirmacion_reserva_email === false) return "desactivado";
   const apiKey = Deno.env.get("RESEND_API_KEY");
   if (!apiKey) { console.warn(JSON.stringify({ scope: "sendConfirmationEmail", status: "not_configured" })); return "no_configurado"; }
-  const dateLabel = isDate(appointment.fecha) ? new Intl.DateTimeFormat("es-CL", { dateStyle: "long", timeZone: "America/Santiago" }).format(new Date(`${appointment.fecha}T12:00:00-04:00`)) : appointment.fecha;
-  const name = `${patient?.nombres || ""} ${patient?.apellidos || ""}`.trim() || "Paciente";
   const from = Deno.env.get("EMAIL_FROM") || "FluyePro <contacto@fluyepro.cl>";
-  const professionalName = `${auth.profile?.nombres || ""} ${auth.profile?.apellidos || ""}`.trim() || "tu profesional";
-  const values = { nombre_paciente: name, nombre_profesional: professionalName, fecha: String(dateLabel ?? ""), hora_inicio: String(appointment.hora_inicio || "").slice(0, 5), hora_fin: String(appointment.hora_fin || "").slice(0, 5), modalidad: String(appointment.modalidad || "presencial") };
+  const values = valoresCita(appointment, auth);
   const subject = aplicarPlantillaCorreo(String(settings?.confirmacion_reserva_email_asunto || notificationDefaults.confirmacion_reserva_email_asunto), values).trim() || notificationDefaults.confirmacion_reserva_email_asunto;
   const message = aplicarPlantillaCorreo(String(settings?.confirmacion_reserva_email_plantilla || notificationDefaults.confirmacion_reserva_email_plantilla), values);
   const html = `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6">${escapeHtml(message).replace(/\r?\n/g, "<br>")}</div>`;
@@ -203,14 +514,12 @@ async function enviarCorreoCambioReserva(appointment: Record<string, any>, auth:
   if (settings?.cambios_reserva_email === false) return "desactivado";
   const apiKey = Deno.env.get("RESEND_API_KEY");
   if (!apiKey) return "no_configurado";
-  const professionalName = `${auth.profile?.nombres || ""} ${auth.profile?.apellidos || ""}`.trim() || "tu profesional";
-  const name = `${patient?.nombres || ""} ${patient?.apellidos || ""}`.trim() || "Paciente";
-  const dateLabel = isDate(appointment.fecha) ? new Intl.DateTimeFormat("es-CL", { dateStyle: "long", timeZone: "America/Santiago" }).format(new Date(`${appointment.fecha}T12:00:00-04:00`)) : appointment.fecha;
+  const values = valoresCita(appointment, auth);
   const cancelled = cambio === "cancelada";
   const subject = cancelled ? "Cambio en tu reserva con FluyePro" : "Tu reserva fue reagendada por FluyePro";
   const message = cancelled
-    ? `Hola ${name},\n\nTu reserva con ${professionalName} fue cancelada. Si deseas coordinar una nueva hora, contacta al profesional.\n\nSaludos,\nFluyePro`
-    : `Hola ${name},\n\nTu reserva con ${professionalName} fue reagendada.\n\nNueva fecha: ${dateLabel}\nNueva hora: ${String(appointment.hora_inicio || "").slice(0, 5)} - ${String(appointment.hora_fin || "").slice(0, 5)}\n\nSaludos,\nFluyePro`;
+    ? `Hola ${values.nombre_paciente},\n\nTu reserva con ${values.nombre_profesional} fue cancelada. Si deseas coordinar una nueva hora, contacta al profesional.\n\nSaludos,\nFluyePro`
+    : `Hola ${values.nombre_paciente},\n\nTu reserva con ${values.nombre_profesional} fue reagendada.\n\nNueva fecha: ${values.fecha}\nNueva hora: ${values.hora_inicio} - ${values.hora_fin}\n\nSaludos,\nFluyePro`;
   const from = Deno.env.get("EMAIL_FROM") || "FluyePro <contacto@fluyepro.cl>";
   try {
     const response = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [email], reply_to: "contacto@fluyepro.cl", subject, html: `<div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6">${escapeHtml(message).replace(/\r?\n/g, "<br>")}</div>` }) });
@@ -226,16 +535,17 @@ async function confirmAppointment(supabase: SupabaseClient, auth: AuthContext, a
   if (current.estado === "cancelada") throw new HttpError(409, "CANCELLED_APPOINTMENT", "No se puede confirmar una cita cancelada.");
   if (current.estado === "confirmada") return current;
   if (current.estado !== "pendiente_confirmacion") throw new HttpError(409, "INVALID_APPOINTMENT_STATUS", "Solo se pueden aceptar reservas pendientes de confirmación.");
-  const { data: appointment, error: updateError } = await supabase.from("citas").update({ estado: "confirmada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, identificador, email, telefono)").single();
+  const { data: appointment, error: updateError } = await supabase.from("citas").update({ estado: "confirmada" }).eq("id", appointmentId).eq("profesional_id", auth.userId).select("*, pacientes (id, nombres, apellidos, identificador, email, telefono, registro_provisional, fecha_nacimiento, tipo_identificador, pais_emisor_identificador)").single();
   if (updateError) throw new HttpError(500, "APPOINTMENT_CONFIRM_FAILED", "No fue posible aceptar la reserva.");
   const notificationStatus = await enviarCorreoConfirmacionReserva(appointment, auth, supabase);
-  return { ...appointment, notification_status: notificationStatus };
+  const whatsappStatus = await enviarWhatsAppReserva(appointment, auth, supabase, "confirmada");
+  return { ...appointment, notification_status: notificationStatus, whatsapp_notification_status: whatsappStatus };
 }
 
 async function listAppointments(supabase: SupabaseClient, auth: AuthContext) {
   const { data, error } = await supabase.from("citas").select(`
     *,
-    pacientes (id, nombres, apellidos, identificador, email, telefono),
+    pacientes (id, nombres, apellidos, identificador, email, telefono, registro_provisional, fecha_nacimiento, tipo_identificador, pais_emisor_identificador),
     sesiones_clinicas (id, estado)
   `).eq("profesional_id", auth.userId).order("fecha", { ascending: true }).order("hora_inicio", { ascending: true });
   if (error) { console.error(JSON.stringify({ scope: "listAppointments", error: error.message, details: error.details, hint: error.hint })); throw new HttpError(500, "APPOINTMENTS_LIST_FAILED", "No fue posible cargar las citas."); }
@@ -432,9 +742,12 @@ async function createPatient(req: Request, supabase: SupabaseClient, auth: AuthC
   try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
   const nombres = typeof body.nombres === "string" ? body.nombres.trim() : "";
   const apellidos = typeof body.apellidos === "string" ? body.apellidos.trim() : "";
-  const identificador = typeof body.identificador === "string" ? body.identificador.trim() : "";
+  let identificador = typeof body.identificador === "string" ? body.identificador.trim() : "";
+  const docError = errorDocumento(body, false);
+  if (docError) throw new HttpError(400, "INVALID_DOCUMENT", docError);
+  identificador = documentoParaGuardar(identificador, body.tipo_identificador, body.pais_emisor_identificador);
   if (!nombres || !apellidos || !identificador) throw new HttpError(400, "INVALID_PATIENT", "Nombres, apellidos e identificador son obligatorios.");
-  const { data: patient, error } = await supabase.from("pacientes").insert({ profesional_id: auth.userId, nombres, apellidos, identificador, email: body.email || null, telefono: body.telefono || null, fecha_nacimiento: body.fecha_nacimiento || null, genero: body.genero || null, contacto_urgencia: body.contacto_urgencia || null, telefono_emergencia: body.telefono_emergencia || null, activo: true }).select("*").single();
+  const { data: patient, error } = await supabase.from("pacientes").insert({ profesional_id: auth.userId, nombres, apellidos, identificador, tipo_identificador: body.tipo_identificador || null, pais_emisor_identificador: body.pais_emisor_identificador || null, email: body.email || null, telefono: body.telefono || null, fecha_nacimiento: body.fecha_nacimiento || null, genero: body.genero || null, contacto_urgencia: body.contacto_urgencia || null, telefono_emergencia: body.telefono_emergencia || null, activo: true }).select("*").single();
   if (error) { console.error(JSON.stringify({ scope: "createPatient", error: error.message, details: error.details, hint: error.hint })); if (error.code === "23505") throw new HttpError(409, "PATIENT_ALREADY_EXISTS", "Ya existe un paciente con ese identificador."); throw new HttpError(500, "PATIENT_CREATE_FAILED", "No fue posible crear el paciente."); }
   return patient;
 }
@@ -444,9 +757,17 @@ async function updatePatient(req: Request, supabase: SupabaseClient, auth: AuthC
   try { body = await req.json(); } catch { throw new HttpError(400, "INVALID_JSON", "El cuerpo debe ser JSON válido."); }
   const nombres = typeof body.nombres === "string" ? body.nombres.trim() : "";
   const apellidos = typeof body.apellidos === "string" ? body.apellidos.trim() : "";
-  const identificador = typeof body.identificador === "string" ? body.identificador.trim() : "";
-  if (!nombres || !apellidos || !identificador) throw new HttpError(400, "INVALID_PATIENT", "Nombres, apellidos e identificador son obligatorios.");
-  const { data: patient, error } = await supabase.from("pacientes").update({ nombres, apellidos, identificador, email: typeof body.email === "string" ? body.email.trim() || null : null, telefono: typeof body.telefono === "string" ? body.telefono.trim() || null : null, fecha_nacimiento: body.fecha_nacimiento || null, genero: body.genero || null, contacto_urgencia: typeof body.contacto_urgencia === "string" ? body.contacto_urgencia.trim() || null : null, telefono_emergencia: typeof body.telefono_emergencia === "string" ? body.telefono_emergencia.trim() || null : null }).eq("id", patientId).eq("profesional_id", auth.userId).eq("activo", true).select("*").maybeSingle();
+  let identificador = typeof body.identificador === "string" ? body.identificador.trim() : "";
+  const { data: current, error: lookupError } = await supabase.from("pacientes").select("registro_provisional,tipo_identificador,pais_emisor_identificador,identificador").eq("id", patientId).eq("profesional_id", auth.userId).eq("activo", true).maybeSingle();
+  if (lookupError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible consultar el paciente.");
+  if (!current) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no está disponible.");
+  const documento = { ...body, tipo_identificador: body.tipo_identificador === undefined ? current.tipo_identificador : body.tipo_identificador, pais_emisor_identificador: body.pais_emisor_identificador === undefined ? current.pais_emisor_identificador : body.pais_emisor_identificador };
+  const docError = errorDocumento(documento);
+  const documentoCambio = identificador !== current.identificador || (documento.tipo_identificador || null) !== current.tipo_identificador || (documento.pais_emisor_identificador || null) !== current.pais_emisor_identificador;
+  if (docError && documentoCambio) throw new HttpError(400, "INVALID_DOCUMENT", docError);
+  identificador = documentoParaGuardar(identificador, documento.tipo_identificador, documento.pais_emisor_identificador);
+  if (!nombres || (!current.registro_provisional && (!apellidos || !identificador))) throw new HttpError(400, "INVALID_PATIENT", "Nombres, apellidos e identificador son obligatorios.");
+  const { data: patient, error } = await supabase.from("pacientes").update({ nombres, apellidos: apellidos || null, identificador: identificador || null, tipo_identificador: documento.tipo_identificador || null, pais_emisor_identificador: documento.pais_emisor_identificador || null, email: typeof body.email === "string" ? body.email.trim() || null : null, telefono: typeof body.telefono === "string" ? body.telefono.trim() || null : null, fecha_nacimiento: body.fecha_nacimiento || null, genero: body.genero || null, contacto_urgencia: typeof body.contacto_urgencia === "string" ? body.contacto_urgencia.trim() || null : null, telefono_emergencia: typeof body.telefono_emergencia === "string" ? body.telefono_emergencia.trim() || null : null }).eq("id", patientId).eq("profesional_id", auth.userId).eq("activo", true).select("*").maybeSingle();
   if (error) { console.error(JSON.stringify({ scope: "updatePatient", error: error.message, details: error.details, hint: error.hint })); if (error.code === "23505") throw new HttpError(409, "PATIENT_ALREADY_EXISTS", "Ya existe un paciente con ese identificador."); throw new HttpError(500, "PATIENT_UPDATE_FAILED", "No fue posible actualizar el paciente."); }
   if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
   return patient;
@@ -555,7 +876,7 @@ async function respondPublicConsentRequest(req: Request, supabase: SupabaseClien
 async function listOperationalAgenda(supabase: SupabaseClient, auth: AuthContext) {
   const { data, error } = await supabase.from("agenda_operativa").select(`
     *,
-    pacientes (id, nombres, apellidos, identificador, email, telefono)
+    pacientes (id, nombres, apellidos, identificador, email, telefono, registro_provisional, fecha_nacimiento, tipo_identificador, pais_emisor_identificador)
   `).eq("profesional_id", auth.userId).order("google_calendar_inicio", { ascending: true });
   if (error) { console.error(JSON.stringify({ scope: "listOperationalAgenda", error: error.message, details: error.details, hint: error.hint })); throw new HttpError(500, "OPERATIONAL_AGENDA_LIST_FAILED", "No fue posible cargar la agenda operativa."); }
   return data ?? [];
@@ -571,7 +892,7 @@ async function linkOperationalAgenda(req: Request, supabase: SupabaseClient, aut
   if (patientError) throw new HttpError(500, "PATIENT_LOOKUP_FAILED", "No fue posible validar el paciente.");
   if (!patient) throw new HttpError(404, "PATIENT_NOT_FOUND", "El paciente no existe o no pertenece al profesional autenticado.");
   const record = { profesional_id: auth.userId, paciente_id: pacienteId, google_calendar_event_id: eventId, google_calendar_summary: body.google_calendar_summary || null, google_calendar_inicio: body.google_calendar_inicio || null, google_calendar_fin: body.google_calendar_fin || null, estado_operativo: "confirmada", consentimiento_ia: "no_registrado", origen: "google_calendar" };
-  const { data, error } = await supabase.from("agenda_operativa").upsert(record, { onConflict: "profesional_id,google_calendar_event_id" }).select(`*, pacientes (id, nombres, apellidos, identificador, email, telefono)`).single();
+  const { data, error } = await supabase.from("agenda_operativa").upsert(record, { onConflict: "profesional_id,google_calendar_event_id" }).select(`*, pacientes (id, nombres, apellidos, identificador, email, telefono, registro_provisional, fecha_nacimiento, tipo_identificador, pais_emisor_identificador)`).single();
   if (error) { console.error(JSON.stringify({ scope: "linkOperationalAgenda", error: error.message, details: error.details, hint: error.hint })); throw new HttpError(500, "OPERATIONAL_AGENDA_LINK_FAILED", "No fue posible vincular el paciente al evento."); }
   return data;
 }
@@ -632,6 +953,7 @@ async function handler(req: Request): Promise<Response> {
     const publicConsentMatch = path.match(/^\/v1\/public\/consents\/([^/]+)$/);
     if (req.method === "GET" && publicConsentMatch) return json(await getPublicConsentRequest(publicDb, publicConsentMatch[1]), 200, origin, id);
     if (req.method === "POST" && publicConsentMatch) return json(await respondPublicConsentRequest(req, publicDb, publicConsentMatch[1]), 200, origin, id);
+    if (req.method === "POST" && path === "/v1/internal/reminders/whatsapp") return json(await procesarRecordatoriosWhatsApp(req, publicDb), 200, origin, id);
     if (req.method === "GET" && path === "/v1/me") { const auth = await authenticate(req, supabase); return json({ user_id: auth.userId, email: auth.email, profile: auth.profile }, 200, origin, id); }
     if (req.method === "GET" && path === "/v1/appointments") { const auth = await authenticate(req, supabase); return json(await listAppointments(supabase, auth), 200, origin, id); }
     if (req.method === "GET" && path === "/v1/availability") { const auth = await authenticate(req, supabase); return json(await listAvailability(supabase, auth), 200, origin, id); }
@@ -656,6 +978,7 @@ async function handler(req: Request): Promise<Response> {
     const sessionAppointmentMatch = path.match(/^\/v1\/clinical-sessions\/appointment\/([^/]+)$/);
     if (req.method === "GET" && sessionAppointmentMatch) { const auth = await authenticate(req, supabase); return json(await getClinicalSessionByAppointment(supabase, auth, sessionAppointmentMatch[1]), 200, origin, id); }
     if (req.method === "POST" && path === "/v1/clinical-sessions") { const auth = await authenticate(req, supabase); return json(await saveClinicalSession(req, supabase, auth), 200, origin, id); }
+    if (req.method === "POST" && path === "/v1/quick-attentions") { await authenticate(req, supabase); return json(await createQuickAttention(req, supabase), 201, origin, id); }
     if (req.method === "POST" && path === "/v1/appointments") { const auth = await authenticate(req, supabase); return json(await createAppointment(req, supabase, auth), 201, origin, id); }
     const rescheduleMatch = path.match(/^\/v1\/appointments\/([^/]+)\/reschedule$/);
     if (req.method === "POST" && rescheduleMatch) { const auth = await authenticate(req, supabase); return json(await rescheduleAppointment(req, supabase, auth, rescheduleMatch[1]), 200, origin, id); }

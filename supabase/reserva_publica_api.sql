@@ -1,6 +1,6 @@
 -- Versión de la reserva pública utilizada por api-mentalia.
 -- Mantiene la función anterior y agrega la modalidad como último parámetro.
-create or replace function public.reservar_hora_publica(
+create or replace function public.reservar_hora_publica_documento(
   p_slug_publico text,
   p_fecha date,
   p_hora_inicio time,
@@ -12,7 +12,9 @@ create or replace function public.reservar_hora_publica(
   p_identificador text default null,
   p_primera_atencion text default null,
   p_canal_contacto text default null,
-  p_modalidad text default 'presencial'
+  p_modalidad text default 'presencial',
+  p_tipo_identificador text default null,
+  p_pais_emisor_identificador text default null
 )
 returns table(cita_id uuid, paciente_id uuid, estado text, mensaje text)
 language plpgsql
@@ -26,12 +28,24 @@ declare
   v_dia_semana int;
   v_email text;
   v_identificador text;
+  v_rut_normalizado text;
   v_existe_disponibilidad boolean;
   v_existe_choque boolean;
 begin
   v_email := lower(trim(coalesce(p_email, '')));
-  v_identificador := nullif(trim(coalesce(p_identificador, '')), '');
+  v_identificador := public.normalizar_documento_guardado(p_identificador, p_tipo_identificador, p_pais_emisor_identificador);
+  v_rut_normalizado := case
+    when p_tipo_identificador = 'rut' and p_pais_emisor_identificador = 'CL'
+      then regexp_replace(upper(coalesce(v_identificador, '')), '[.\s-]', '', 'g')
+    else null
+  end;
 
+  if p_tipo_identificador is null or p_pais_emisor_identificador is null
+    or p_tipo_identificador not in ('rut', 'pasaporte', 'documento_nacional', 'otro')
+    or p_pais_emisor_identificador !~ '^[A-Z]{2}$'
+    or (p_tipo_identificador = 'rut' and p_pais_emisor_identificador <> 'CL') then
+    raise exception 'Selecciona el tipo de documento y su país emisor.';
+  end if;
   if nullif(trim(coalesce(p_slug_publico, '')), '') is null then
     raise exception 'No se indicó el enlace público del profesional.';
   end if;
@@ -83,16 +97,31 @@ begin
 
   select pa.id into v_paciente_id from public.pacientes pa
   where pa.profesional_id = v_profesional_id
-    and ((v_identificador is not null and pa.identificador = v_identificador)
-      or lower(coalesce(pa.email, '')) = v_email) limit 1;
+    and pa.activo = true
+    and ((v_rut_normalizado is not null
+        and coalesce(pa.tipo_identificador, 'rut') = 'rut'
+        and coalesce(pa.pais_emisor_identificador, 'CL') = 'CL'
+        and regexp_replace(upper(coalesce(pa.identificador, '')), '[.\s-]', '', 'g') = v_rut_normalizado)
+      or (v_identificador is not null and pa.tipo_identificador = p_tipo_identificador and pa.pais_emisor_identificador = p_pais_emisor_identificador
+        and public.normalizar_documento_guardado(pa.identificador, pa.tipo_identificador, pa.pais_emisor_identificador) = v_identificador)
+      or (v_identificador is null and pa.tipo_identificador is not distinct from p_tipo_identificador
+        and pa.pais_emisor_identificador is not distinct from p_pais_emisor_identificador and nullif(trim(pa.identificador), '') is null
+        and lower(coalesce(pa.email, '')) = v_email
+        and lower(trim(pa.nombres)) = lower(trim(p_nombres))
+        and lower(trim(pa.apellidos)) = lower(trim(p_apellidos))))
+  order by case when pa.tipo_identificador = p_tipo_identificador and pa.pais_emisor_identificador = p_pais_emisor_identificador then 0 else 1 end,
+    pa.fecha_crea asc
+  limit 1;
 
   if v_paciente_id is null then
-    insert into public.pacientes (profesional_id, nombres, apellidos, identificador, email, telefono)
-    values (v_profesional_id, trim(p_nombres), trim(p_apellidos), v_identificador, v_email, trim(p_telefono))
+    insert into public.pacientes (profesional_id, nombres, apellidos, identificador, email, telefono, tipo_identificador, pais_emisor_identificador)
+    values (v_profesional_id, trim(p_nombres), trim(p_apellidos), v_identificador, v_email, trim(p_telefono), p_tipo_identificador, p_pais_emisor_identificador)
     returning id into v_paciente_id;
   else
     update public.pacientes set nombres = trim(p_nombres), apellidos = trim(p_apellidos),
-      identificador = coalesce(v_identificador, identificador), email = v_email, telefono = trim(p_telefono)
+      identificador = coalesce(v_identificador, identificador), email = v_email, telefono = trim(p_telefono),
+      tipo_identificador = coalesce(tipo_identificador, p_tipo_identificador),
+      pais_emisor_identificador = coalesce(pais_emisor_identificador, p_pais_emisor_identificador)
     where id = v_paciente_id;
   end if;
 
@@ -106,8 +135,22 @@ begin
 end;
 $$;
 
-revoke execute on function public.reservar_hora_publica(text, date, time, time, text, text, text, text, text, text, text, text)
+revoke execute on function public.reservar_hora_publica_documento(text, date, time, time, text, text, text, text, text, text, text, text, text, text)
   from public;
 
-grant execute on function public.reservar_hora_publica(text, date, time, time, text, text, text, text, text, text, text, text)
+grant execute on function public.reservar_hora_publica_documento(text, date, time, time, text, text, text, text, text, text, text, text, text, text)
   to anon, authenticated;
+
+create or replace function public.reservar_hora_publica(
+  p_slug_publico text, p_fecha date, p_hora_inicio time, p_hora_fin time,
+  p_nombres text, p_apellidos text, p_email text, p_telefono text,
+  p_identificador text default null, p_primera_atencion text default null,
+  p_canal_contacto text default null, p_modalidad text default 'presencial'
+) returns table(cita_id uuid, paciente_id uuid, estado text, mensaje text)
+language sql security definer set search_path = '' as $legacy$
+  select * from public.reservar_hora_publica_documento(p_slug_publico, p_fecha, p_hora_inicio, p_hora_fin,
+    p_nombres, p_apellidos, p_email, p_telefono, p_identificador, p_primera_atencion,
+    p_canal_contacto, p_modalidad, 'rut', 'CL');
+$legacy$;
+revoke all on function public.reservar_hora_publica(text,date,time,time,text,text,text,text,text,text,text,text) from public;
+grant execute on function public.reservar_hora_publica(text,date,time,time,text,text,text,text,text,text,text,text) to anon, authenticated;

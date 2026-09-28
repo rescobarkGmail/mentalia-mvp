@@ -42,28 +42,20 @@ function sumarDias(fecha, cantidadDias) {
   return nueva;
 }
 
-function generarSlots(horaInicio, horaFin, duracion) {
+function generarSlots(horaInicio, horaFin, duracion, descanso = 0) {
   const slots = [];
-  const [hi, mi] = horaInicio.slice(0, 5).split(":").map(Number);
-  const [hf, mf] = horaFin.slice(0, 5).split(":").map(Number);
+  const [hi, mi] = String(horaInicio).slice(0, 5).split(":").map(Number);
+  const [hf, mf] = String(horaFin).slice(0, 5).split(":").map(Number);
+  const duracionMinutos = Number(duracion);
+  const descansoMinutos = Number(descanso) || 0;
+  const fin = hf * 60 + mf;
+  let actual = hi * 60 + mi;
+  const formato = (minutos) => `${String(Math.floor(minutos / 60)).padStart(2, "0")}:${String(minutos % 60).padStart(2, "0")}`;
 
-  let actual = new Date();
-  actual.setHours(hi, mi, 0, 0);
-
-  const fin = new Date();
-  fin.setHours(hf, mf, 0, 0);
-
-  while (actual < fin) {
-    const siguiente = new Date(actual.getTime() + Number(duracion) * 60000);
-
-    if (siguiente <= fin) {
-      slots.push({
-        hora_inicio: actual.toTimeString().slice(0, 5),
-        hora_fin: siguiente.toTimeString().slice(0, 5),
-      });
-    }
-
-    actual = siguiente;
+  while (duracionMinutos > 0 && actual + duracionMinutos <= fin) {
+    const siguiente = actual + duracionMinutos;
+    slots.push({ hora_inicio: formato(actual), hora_fin: formato(siguiente) });
+    actual = siguiente + descansoMinutos;
   }
 
   return slots;
@@ -271,7 +263,8 @@ export default function DisponibilidadPage({ user, goBack }) {
       generarSlots(
         regla.hora_inicio,
         regla.hora_fin,
-        regla.duracion_minutos
+        regla.duracion_minutos,
+        regla.descanso_minutos
       ).forEach((slot) => {
         const eventoGoogle = eventoGoogleQueBloquea(
           fecha,

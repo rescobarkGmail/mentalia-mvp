@@ -2,8 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import {
   obtenerAccessTokenGoogle,
+  leerJsonSesionDrive,
   subirJsonSesionDrive,
 } from "../lib/googleDriveClient";
+import { formatearFecha } from "../utils/formato";
 import {
   guardarSesionClinica,
   obtenerSesionClinicaPorCita,
@@ -29,6 +31,8 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
   const [guardando, setGuardando] = useState(false);
   const [storageProvider, setStorageProvider] = useState("mentalia_cloud");
   const [paciente, setPaciente] = useState(null);
+  const [ultimaSesion, setUltimaSesion] = useState(null);
+  const [cargandoContexto, setCargandoContexto] = useState(true);
 
   const [motivoConsulta, setMotivoConsulta] = useState("");
   const [notasClinicas, setNotasClinicas] = useState("");
@@ -56,6 +60,7 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     cargarConfiguracion();
     cargarPaciente();
     cargarSesion();
+    cargarContextoClinico();
     cargarConsentimientos();
   }, []);
 
@@ -108,6 +113,65 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
     setResumenSesion(data.resumen_sesion || "");
     setFocoTrabajado(data.foco_trabajado || "");
     setProximaSesion(data.proxima_sesion || "");
+  }
+
+  async function cargarContextoClinico() {
+    const pacienteId = cita.paciente_id || cita.paciente?.id || cita.pacientes?.id;
+    if (!pacienteId) {
+      setCargandoContexto(false);
+      return;
+    }
+
+    setCargandoContexto(true);
+    try {
+      let query = supabase
+        .from("sesiones_clinicas")
+        .select("*")
+        .eq("paciente_id", pacienteId)
+        .order("fecha", { ascending: false })
+        .limit(1);
+
+      if (cita.id) query = query.neq("cita_id", cita.id);
+
+      const { data, error } = await query.maybeSingle();
+
+      if (error) throw error;
+      if (!data) {
+        setUltimaSesion(null);
+        return;
+      }
+
+      if (data.clinical_data_external === true && data.storage_provider === "google_drive" && data.storage_file_id) {
+        const accessToken = await obtenerAccessTokenGoogle();
+        const jsonDrive = await leerJsonSesionDrive({ accessToken, fileId: data.storage_file_id });
+        setUltimaSesion({ ...data, ...(jsonDrive.sesion || {}), origen_datos: "google_drive" });
+        return;
+      }
+
+      setUltimaSesion(data);
+    } catch (error) {
+      setMensajeOperacion({ tipo: "error", texto: error.message || "No fue posible cargar el contexto clínico previo." });
+    } finally {
+      setCargandoContexto(false);
+    }
+  }
+
+  function estadoConsentimiento(codigo) {
+    return consentimientos.find((item) => item.codigo === codigo)?.estado || "pendiente";
+  }
+
+  function ConsentimientoChip({ label, estado }) {
+    const color = estado === "aceptado"
+      ? "bg-emerald-100 text-emerald-800"
+      : estado === "rechazado" || estado === "revocado"
+      ? "bg-red-100 text-red-800"
+      : "bg-amber-100 text-amber-800";
+
+    return (
+      <span className={`inline-flex w-fit items-center rounded-full px-3 py-1 text-xs font-black uppercase ${color}`}>
+        {label}: {estado}
+      </span>
+    );
   }
 
   async function iniciarGrabacion(esDictadoProfesional = false) {
@@ -370,6 +434,8 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
             </h1>
 
             <p className="mt-2 text-slate-500">{cita.patient}</p>
+            {cita.atencion_rapida && <p className="mt-3 rounded-xl bg-cyan-50 p-3 text-sm text-cyan-800">Atención rápida · {cita.modalidad === "domicilio" ? "Domicilio" : cita.modalidad === "online" ? "Online" : "Presencial"}. Revisa después los pendientes administrativos.</p>}
+            {paciente?.registro_provisional && <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">Paciente provisional. Completa su identificación desde Pacientes.</p>}
             <p className="text-sm text-slate-400">
               {cita.fecha} · {cita.hora_inicio}
             </p>
@@ -384,6 +450,75 @@ export default function SesionClinicaPage({ user, cita, goBack }) {
               </div>
             )}
           </div>
+
+          <section className="mb-8 rounded-3xl border border-cyan-100 bg-cyan-50 p-5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-xl font-black text-cyan-950">Contexto de atención</h2>
+                <p className="mt-1 text-sm text-cyan-900">
+                  Resumen operativo antes de registrar la sesión.
+                </p>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${puedeGrabarSesion ? "bg-emerald-200 text-emerald-900" : "bg-amber-200 text-amber-900"}`}>
+                {puedeGrabarSesion ? "Grabación autorizada" : "Grabación bloqueada"}
+              </span>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-black uppercase text-slate-500">Paciente</p>
+                <p className="mt-1 font-black text-slate-900">{`${paciente?.nombres || ""} ${paciente?.apellidos || ""}`.trim() || cita.patient || "Sin registro"}</p>
+                <p className="mt-1 text-sm text-slate-500">{paciente?.identificador || "Identificador no informado"}</p>
+              </div>
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-black uppercase text-slate-500">Cita</p>
+                <p className="mt-1 font-black text-slate-900">{cita.fecha ? formatearFecha(cita.fecha) : "Fecha no informada"}</p>
+                <p className="mt-1 text-sm text-slate-500">{cita.hora_inicio?.slice(0, 5) || "Sin hora"}{cita.hora_fin ? ` - ${cita.hora_fin.slice(0, 5)}` : ""} · {cita.modalidad || "presencial"}</p>
+              </div>
+              <div className="rounded-2xl bg-white p-4">
+                <p className="text-xs font-black uppercase text-slate-500">Consentimientos clave</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <ConsentimientoChip label="Audio" estado={estadoConsentimiento("grabacion_audio")} />
+                  <ConsentimientoChip label="IA" estado={estadoConsentimiento("transcripcion_ia")} />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-2xl bg-white p-4">
+              {cargandoContexto ? (
+                <p className="text-sm text-slate-500">Cargando antecedentes previos...</p>
+              ) : !ultimaSesion ? (
+                <div>
+                  <p className="font-black text-slate-900">Paciente sin historial clínico registrado</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Esta será la primera sesión registrada en la ficha clínica. Revisa datos administrativos y consentimientos antes de finalizar.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-black text-slate-900">Última sesión registrada</p>
+                      <p className="text-sm text-slate-500">{ultimaSesion.fecha ? formatearFecha(ultimaSesion.fecha) : "Fecha no informada"} · {ultimaSesion.estado || "Sin estado"}</p>
+                    </div>
+                    <span className="w-fit rounded-full bg-cyan-100 px-3 py-1 text-xs font-black uppercase text-cyan-800">
+                      {ultimaSesion.storage_provider === "google_drive" ? "Google Drive" : "Mentalia Cloud"}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl bg-slate-50 p-3">
+                      <p className="text-xs font-black uppercase text-slate-500">Motivo anterior</p>
+                      <p className="mt-1 whitespace-pre-line text-sm text-slate-700">{ultimaSesion.motivo_consulta || "Sin registro"}</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-3">
+                      <p className="text-xs font-black uppercase text-slate-500">Tareas o acuerdos previos</p>
+                      <p className="mt-1 whitespace-pre-line text-sm text-slate-700">{ultimaSesion.tareas_acuerdos || "Sin registro"}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
 
           <section className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
             <h2 className="text-xl font-black text-slate-900">

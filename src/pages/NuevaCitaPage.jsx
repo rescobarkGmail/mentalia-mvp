@@ -77,29 +77,18 @@ export default function NuevaCitaPage({ user, goBack }) {
     return date.toTimeString().slice(0, 5);
   }
 
-  function generarSlots(horaInicioBloque, horaFinBloque, duracionMinutos) {
+  function generarSlots(horaInicioBloque, horaFinBloque, duracionMinutos, descansoMinutos = 0) {
     const slots = [];
+    const [hi, mi] = String(horaInicioBloque).slice(0, 5).split(":").map(Number);
+    const [hf, mf] = String(horaFinBloque).slice(0, 5).split(":").map(Number);
+    const duracion = Number(duracionMinutos);
+    const descanso = Number(descansoMinutos) || 0;
+    const fin = hf * 60 + mf;
+    let actual = hi * 60 + mi;
 
-    const [hi, mi] = horaInicioBloque.split(":").map(Number);
-    const [hf, mf] = horaFinBloque.split(":").map(Number);
-
-    let actual = new Date();
-    actual.setHours(hi, mi, 0, 0);
-
-    const fin = new Date();
-    fin.setHours(hf, mf, 0, 0);
-
-    while (actual < fin) {
-      const hora = actual.toTimeString().slice(0, 5);
-      const horaFinSlot = calcularHoraFin(hora, duracionMinutos);
-
-      if (horaFinSlot <= horaFinBloque.slice(0, 5)) {
-        slots.push(hora);
-      }
-
-      actual = new Date(
-        actual.getTime() + Number(duracionMinutos) * 60000
-      );
+    while (duracion > 0 && actual + duracion <= fin) {
+      slots.push(`${String(Math.floor(actual / 60)).padStart(2, "0")}:${String(actual % 60).padStart(2, "0")}`);
+      actual += duracion + descanso;
     }
 
     return slots;
@@ -170,7 +159,7 @@ export default function NuevaCitaPage({ user, goBack }) {
 
       if (!aplica) return;
 
-      generarSlots(inicio, fin, Number(duracion)).forEach((hora) => {
+      generarSlots(inicio, fin, Number(duracion), item.descanso_minutos).forEach((hora) => {
         const ocupado = existeCitaEnHorario(fecha, hora);
         const pasado = esFechaHoraPasada(fecha, hora);
 

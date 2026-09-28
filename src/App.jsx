@@ -356,7 +356,7 @@ export default function App() {
   if (view === "agenda") {
     return (
       <AppShell activeView="agenda" onNavigate={setView}>
-        <AgendaPage user={user} refreshKey={agendaRefreshKey} goBack={() => setView("dashboard")} iniciarFlujo={iniciarFlujo} verFichaClinica={(paciente) => verFichaClinica(paciente, "agenda")} />
+        <AgendaPage user={user} refreshKey={agendaRefreshKey} goBack={() => setView("dashboard")} iniciarFlujo={iniciarFlujo} iniciarAtencionRapida={iniciarSesionClinica} verFichaClinica={(paciente) => verFichaClinica(paciente, "agenda")} />
       </AppShell>
     );
   }

@@ -426,7 +426,7 @@ export default function ConfiguracionPage({ user, goBack }) {
           </div>
 
           <div className="mt-5 rounded-2xl border border-cyan-100 bg-cyan-50 p-4 text-sm leading-6 text-cyan-900">
-             Configura los avisos que recibirá el paciente y personaliza el correo de reserva aceptada. WhatsApp queda preparado para una integración posterior.
+             Configura los avisos que recibirá el paciente. WhatsApp requiere consentimiento vigente, teléfono registrado y credenciales activas del proveedor.
           </div>
 
           {cargandoNotificaciones ? (

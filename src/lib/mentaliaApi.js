@@ -172,6 +172,10 @@ export function obtenerPacientes() {
   return apiGet("/v1/patients");
 }
 
+export function obtenerPerfilProfesional() {
+  return apiGet("/v1/me");
+}
+
 export function obtenerAgendaOperativa() {
   return apiGet("/v1/operational-agenda");
 }
@@ -305,6 +309,26 @@ export async function solicitarConsentimientosPaciente(pacienteId) {
     error.code = payload?.error?.code || `HTTP_${response.status}`;
     error.status = response.status;
     error.requestId = payload?.request_id;
+    throw error;
+  }
+  return payload.data;
+}
+
+export async function crearAtencionRapida(datos) {
+  const accessToken = await obtenerAccessToken();
+  const response = await fetch(`${apiUrl}/v1/quick-attentions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, apikey: import.meta.env.VITE_SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(datos),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.error || !payload?.data?.id) {
+    const error = new Error(payload?.error?.message || "No fue posible confirmar la creación de la atención.");
+    error.code = payload?.error?.code;
+    error.status = payload ? response.status : 502;
+    // Solo una respuesta de negocio explícita confirma que la transacción falló.
+    // Un proxy o una respuesta incompleta puede ocultar una operación ya guardada.
+    error.resultadoIncierto = !payload?.error?.code;
     throw error;
   }
   return payload.data;

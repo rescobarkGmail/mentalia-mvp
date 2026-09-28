@@ -1,3 +1,6 @@
+import DocumentoCampos from "../components/DocumentoCampos";
+import { documentoParaGuardar, errorDocumento } from "../../supabase/functions/_shared/documento.js";
+import { normalizarRut } from "../utils/atencionRapida";
 import React, { useEffect, useState } from "react";
 import { actualizarPacienteApi, crearPacienteApi, obtenerPacientes, solicitarConsentimientosPaciente, obtenerConsentimientosPaciente } from "../lib/mentaliaApi";
 
@@ -8,6 +11,7 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
   const [nombres, setNombres] = useState("");
   const [apellidos, setApellidos] = useState("");
   const [identificador, setIdentificador] = useState("");
+  const [documento, setDocumento] = useState({ tipo_identificador: "", pais_emisor_identificador: "" });
   const [email, setEmail] = useState("");
   const [telefono, setTelefono] = useState("");
   const [fechaNacimiento, setFechaNacimiento] = useState("");
@@ -62,12 +66,15 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
       return;
     }
 
+    const errorDoc = errorDocumento({ ...documento, identificador }, false);
+    if (errorDoc) return setMensajeOperacion(errorDoc);
     setGuardando(true);
     try {
       await crearPacienteApi({
         nombres,
         apellidos,
-        identificador,
+        ...documento,
+        identificador: documentoParaGuardar(identificador, documento.tipo_identificador, documento.pais_emisor_identificador),
         email: email || null,
         telefono: telefono || null,
         fecha_nacimiento: fechaNacimiento || null,
@@ -87,6 +94,7 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
     setNombres("");
     setApellidos("");
     setIdentificador("");
+    setDocumento({ tipo_identificador: "", pais_emisor_identificador: "" });
     setEmail("");
     setTelefono("");
     setFechaNacimiento("");
@@ -110,14 +118,17 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
 
   function abrirEdicion(paciente) {
     setPacienteEditando(paciente);
-    setDatosEdicion({ nombres: paciente.nombres || "", apellidos: paciente.apellidos || "", identificador: paciente.identificador || "", email: paciente.email || "", telefono: paciente.telefono || "", fecha_nacimiento: paciente.fecha_nacimiento?.slice(0, 10) || "", genero: paciente.genero || "", contacto_urgencia: paciente.contacto_urgencia || "", telefono_emergencia: paciente.telefono_emergencia || "" });
+    setDatosEdicion({ nombres: paciente.nombres || "", apellidos: paciente.apellidos || "", identificador: paciente.identificador || "", tipo_identificador: paciente.tipo_identificador || "", pais_emisor_identificador: paciente.pais_emisor_identificador || "", email: paciente.email || "", telefono: paciente.telefono || "", fecha_nacimiento: paciente.fecha_nacimiento?.slice(0, 10) || "", genero: paciente.genero || "", contacto_urgencia: paciente.contacto_urgencia || "", telefono_emergencia: paciente.telefono_emergencia || "" });
   }
 
   async function guardarEdicion() {
     if (!pacienteEditando) return;
+    const errorDoc = errorDocumento(datosEdicion);
+    const documentoCambio = datosEdicion.identificador !== pacienteEditando.identificador || (datosEdicion.tipo_identificador || null) !== pacienteEditando.tipo_identificador || (datosEdicion.pais_emisor_identificador || null) !== pacienteEditando.pais_emisor_identificador;
+    if (errorDoc && documentoCambio) return alert(errorDoc);
     setGuardandoEdicion(true);
     try {
-      const actualizado = await actualizarPacienteApi(pacienteEditando.id, datosEdicion);
+      const actualizado = await actualizarPacienteApi(pacienteEditando.id, { ...datosEdicion, identificador: documentoParaGuardar(datosEdicion.identificador, datosEdicion.tipo_identificador, datosEdicion.pais_emisor_identificador) });
       setPacientes((prev) => prev.map((p) => p.id === actualizado.id ? actualizado : p));
       setPacienteEditando(null);
     } catch (error) {
@@ -136,7 +147,7 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
       p.identificador || ""
     } ${p.email || ""}`.toLowerCase();
 
-    return texto.includes(busqueda.toLowerCase());
+    return texto.includes(busqueda.toLowerCase()) || (!!normalizarRut(busqueda) && normalizarRut(p.identificador).includes(normalizarRut(busqueda)));
   });
 
   return (
@@ -168,14 +179,15 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
             />
 
             <input
-              placeholder="Apellidos *"
+              placeholder="Apellidos"
               value={apellidos}
               onChange={(e) => setApellidos(e.target.value)}
               className="w-full rounded-xl border px-4 py-3"
             />
 
+            <DocumentoCampos datos={documento} onChange={setDocumento} />
             <input
-              placeholder="Identificador / RUT / DNI *"
+              placeholder="Número de documento *"
               value={identificador}
               onChange={(e) => setIdentificador(e.target.value)}
               className="w-full rounded-xl border px-4 py-3"
@@ -283,7 +295,7 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
                     <tr key={p.id} className="rounded-xl bg-slate-50">
                       <td className="rounded-l-xl px-4 py-4">
                         <p className="font-black text-slate-800">
-                          {p.nombres} {p.apellidos}
+                          {p.nombres} {p.apellidos}{p.registro_provisional && <span className="ml-2 rounded bg-amber-100 px-2 py-1 text-xs text-amber-800">Provisional · datos pendientes</span>}
                         </p>
                         <p className="text-xs text-slate-500">
                           {p.genero || "Sin género registrado"}
@@ -327,7 +339,7 @@ export default function PacientesPage({ user, goBack, verFichaClinica }) {
           )}
         </section>
 
-        {pacienteEditando && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"><div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between gap-4"><div><h2 className="text-2xl font-black text-slate-900">Datos del paciente</h2><p className="text-sm text-slate-500">Revisa o actualiza la información administrativa almacenada.</p></div><button type="button" onClick={() => setPacienteEditando(null)} className="rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-600">Cerrar</button></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><input value={datosEdicion.nombres || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, nombres: e.target.value }))} placeholder="Nombres *" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.apellidos || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, apellidos: e.target.value }))} placeholder="Apellidos *" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.identificador || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, identificador: e.target.value }))} placeholder="Identificador / RUT *" className="rounded-xl border px-4 py-3" /><input type="email" value={datosEdicion.email || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, email: e.target.value }))} placeholder="Correo electrónico" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.telefono || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, telefono: e.target.value }))} placeholder="Teléfono" className="rounded-xl border px-4 py-3" /><input type="date" value={datosEdicion.fecha_nacimiento || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, fecha_nacimiento: e.target.value }))} aria-label="Fecha de nacimiento" className="rounded-xl border px-4 py-3" /><select value={datosEdicion.genero || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, genero: e.target.value }))} aria-label="Género" className="rounded-xl border px-4 py-3"><option value="">Género</option><option value="femenino">Femenino</option><option value="masculino">Masculino</option><option value="otro">Otro</option><option value="prefiere_no_decir">Prefiere no decir</option></select><input value={datosEdicion.contacto_urgencia || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, contacto_urgencia: e.target.value }))} placeholder="Contacto de urgencia" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.telefono_emergencia || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, telefono_emergencia: e.target.value }))} placeholder="Teléfono de emergencia" className="rounded-xl border px-4 py-3" /></div><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setPacienteEditando(null)} className="rounded-xl border border-slate-300 px-4 py-3 font-bold text-slate-700">Cancelar</button><button type="button" onClick={guardarEdicion} disabled={guardandoEdicion} className="rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white disabled:opacity-50">{guardandoEdicion ? "Guardando..." : "Guardar cambios"}</button></div></div></div>}
+        {pacienteEditando && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"><div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between gap-4"><div><h2 className="text-2xl font-black text-slate-900">Datos del paciente</h2><p className="text-sm text-slate-500">Revisa o actualiza los datos. Si el registro es provisional, puedes completarlos por etapas.</p></div><button type="button" onClick={() => setPacienteEditando(null)} className="rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-600">Cerrar</button></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><input value={datosEdicion.nombres || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, nombres: e.target.value }))} placeholder="Nombres *" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.apellidos || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, apellidos: e.target.value }))} placeholder="Apellidos" className="rounded-xl border px-4 py-3" /><DocumentoCampos datos={datosEdicion} onChange={setDatosEdicion} /><input value={datosEdicion.identificador || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, identificador: e.target.value }))} placeholder="Número de documento" className="rounded-xl border px-4 py-3" /><input type="email" value={datosEdicion.email || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, email: e.target.value }))} placeholder="Correo electrónico" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.telefono || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, telefono: e.target.value }))} placeholder="Teléfono" className="rounded-xl border px-4 py-3" /><input type="date" value={datosEdicion.fecha_nacimiento || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, fecha_nacimiento: e.target.value }))} aria-label="Fecha de nacimiento" className="rounded-xl border px-4 py-3" /><select value={datosEdicion.genero || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, genero: e.target.value }))} aria-label="Género" className="rounded-xl border px-4 py-3"><option value="">Género</option><option value="femenino">Femenino</option><option value="masculino">Masculino</option><option value="otro">Otro</option><option value="prefiere_no_decir">Prefiere no decir</option></select><input value={datosEdicion.contacto_urgencia || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, contacto_urgencia: e.target.value }))} placeholder="Contacto de urgencia" className="rounded-xl border px-4 py-3" /><input value={datosEdicion.telefono_emergencia || ""} onChange={(e) => setDatosEdicion((prev) => ({ ...prev, telefono_emergencia: e.target.value }))} placeholder="Teléfono de emergencia" className="rounded-xl border px-4 py-3" /></div><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setPacienteEditando(null)} className="rounded-xl border border-slate-300 px-4 py-3 font-bold text-slate-700">Cancelar</button><button type="button" onClick={guardarEdicion} disabled={guardandoEdicion} className="rounded-xl bg-[#18AFC1] px-4 py-3 font-black text-white disabled:opacity-50">{guardandoEdicion ? "Guardando..." : "Guardar cambios"}</button></div></div></div>}
         {consentimientosPaciente && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"><div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between"><div><h2 className="text-2xl font-black text-slate-900">Consentimientos</h2><p className="text-sm text-slate-500">{consentimientosPaciente.paciente.nombres} {consentimientosPaciente.paciente.apellidos}</p></div><button type="button" onClick={() => setConsentimientosPaciente(null)} className="rounded-xl border border-slate-300 px-3 py-2 font-bold text-slate-600">Cerrar</button></div><div className="mt-5 space-y-3">{consentimientosPaciente.items.length ? consentimientosPaciente.items.map((item) => { const estado = item.estado || "pendiente"; const color = estado === "aceptado" ? "border-emerald-200 bg-emerald-50" : estado === "rechazado" || estado === "revocado" ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"; const badge = estado === "aceptado" ? "bg-emerald-100 text-emerald-800" : estado === "rechazado" || estado === "revocado" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"; return <div key={item.codigo} className={`flex items-center justify-between rounded-2xl border p-4 ${color}`}><div><p className="font-black text-slate-800">{item.consentimiento_tipos?.titulo || item.codigo}</p><p className="text-xs text-slate-500">Última respuesta: {item.respondido_en ? new Date(item.respondido_en).toLocaleString("es-CL") : "Sin respuesta"}</p></div><span className={`rounded-full px-3 py-1 text-xs font-black uppercase ${badge}`}>{estado}</span></div>; }) : <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Aún no hay consentimientos registrados.</p>}</div><button type="button" onClick={() => { solicitarConsentimientos(consentimientosPaciente.paciente); setConsentimientosPaciente(null); }} className="mt-5 w-full rounded-xl bg-cyan-600 px-4 py-3 font-black text-white">Solicitar aprobación por correo</button></div></div>}
       </div>
     </main>

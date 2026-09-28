@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Building2, MapPin, Shuffle, Video } from "lucide-react";
+import AtencionRapidaPanel from "../components/AtencionRapidaPanel";
+import { ahoraSantiago, seSuperponen } from "../utils/atencionRapida";
 import { formatearFecha } from "../utils/formato";
 import {
   obtenerAccessTokenGoogleCalendar,
@@ -161,9 +163,11 @@ export default function AgendaPage({
   refreshKey = 0,
   goBack,
   iniciarFlujo,
+  iniciarAtencionRapida,
   verFichaClinica,
 }) {
   const [view, setView] = useState("week");
+  const [inicioRapido, setInicioRapido] = useState(null);
   const [citas, setCitas] = useState([]);
   const [disponibilidad, setDisponibilidad] = useState([]);
   const [semanaBase, setSemanaBase] = useState(inicioSemana(new Date()));
@@ -172,6 +176,8 @@ export default function AgendaPage({
   const [citaCancelando, setCitaCancelando] = useState(null);
   const [nuevaFecha, setNuevaFecha] = useState("");
   const [nuevaHora, setNuevaHora] = useState("");
+  const [guardandoReagenda, setGuardandoReagenda] = useState(false);
+  const [errorReagenda, setErrorReagenda] = useState("");
   const [cargando, setCargando] = useState(false);
   const [mensajeAgenda, setMensajeAgenda] = useState(null);
 
@@ -702,13 +708,39 @@ export default function AgendaPage({
     setCitaCancelando(cita);
   }
 
+  function textoEstadoNotificacion(canal, estado) {
+    const nombre = canal === "whatsapp" ? "WhatsApp" : "correo";
+    const textos = {
+      enviado: `${nombre} enviado`,
+      fallido: `${nombre} fallido`,
+      sin_correo: "sin correo registrado",
+      sin_telefono: "sin teléfono registrado",
+      sin_consentimiento: "WhatsApp sin consentimiento",
+      desactivado: `${nombre} desactivado`,
+      no_configurado: `${nombre} no configurado`,
+    };
+    return textos[estado] || null;
+  }
+
+  function textoNotificaciones(actualizada) {
+    const estados = [
+      textoEstadoNotificacion("correo", actualizada?.notification_status),
+      textoEstadoNotificacion("whatsapp", actualizada?.whatsapp_notification_status),
+    ].filter(Boolean);
+    return estados.length ? ` Notificaciones: ${estados.join(" · ")}.` : "";
+  }
+
+  function tipoMensajeNotificacion(actualizada) {
+    return [actualizada?.notification_status, actualizada?.whatsapp_notification_status].includes("fallido") ? "error" : "success";
+  }
+
   async function ejecutarCancelacion(cita) {
     try {
       const actualizada = await cancelarCitaApi(cita.id);
       setCitas((prev) =>
         prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item)
       );
-      setMensajeAgenda({ tipo: "success", texto: actualizada?.notification_status === "enviado" ? "Cita cancelada y paciente notificado por correo." : "Cita cancelada." });
+      setMensajeAgenda({ tipo: tipoMensajeNotificacion(actualizada), texto: `Cita cancelada.${textoNotificaciones(actualizada)}` });
     } catch (error) {
       setMensajeAgenda({ tipo: "error", texto: error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible cancelar la cita." });
       return;
@@ -722,7 +754,7 @@ export default function AgendaPage({
     try {
       const actualizada = await confirmarCitaApi(cita.id);
       setCitas((prev) => prev.map((item) => item.id === cita.id ? { ...item, ...actualizada } : item));
-      setMensajeAgenda({ tipo: actualizada?.notification_status === "fallido" ? "error" : "success", texto: actualizada?.notification_status === "enviado" ? "Reserva aceptada y correo enviado al paciente." : actualizada?.notification_status === "sin_correo" ? "Reserva aceptada. El paciente no tiene un correo registrado." : actualizada?.notification_status === "fallido" ? "Reserva aceptada, pero no fue posible enviar el correo." : "Reserva aceptada." });
+      setMensajeAgenda({ tipo: tipoMensajeNotificacion(actualizada), texto: `Reserva aceptada.${textoNotificaciones(actualizada)}` });
     } catch (error) {
       setMensajeAgenda({ tipo: "error", texto: error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible aceptar la reserva." });
     } finally {
@@ -731,11 +763,14 @@ export default function AgendaPage({
   }
 
   async function guardarReagenda() {
+    if (guardandoReagenda) return;
+    setErrorReagenda("");
     if (!citaEditando || !nuevaFecha || !nuevaHora) {
-      setMensajeAgenda({ tipo: "error", texto: "Selecciona fecha y hora." });
+      setErrorReagenda("Selecciona fecha y hora.");
       return;
     }
 
+    setGuardandoReagenda(true);
     try {
       const actualizada = await reprogramarCita({
         citaId: citaEditando.id,
@@ -746,16 +781,20 @@ export default function AgendaPage({
       setCitas((prev) =>
         prev.map((item) => item.id === citaEditando.id ? { ...item, ...actualizada } : item)
       );
-      setMensajeAgenda({ tipo: "success", texto: actualizada?.notification_status === "enviado" ? "Cita reagendada y paciente notificado por correo." : "Cita reagendada." });
+      setMensajeAgenda({ tipo: tipoMensajeNotificacion(actualizada), texto: `Cita reagendada.${textoNotificaciones(actualizada)}` });
     } catch (error) {
       const texto = error.code === "SLOT_ALREADY_BOOKED" ? "Ese horario ya está reservado. Selecciona otro horario." : error.code === "OUTSIDE_AVAILABILITY" ? "El horario seleccionado no está dentro de la disponibilidad configurada." : error.code === "PAST_APPOINTMENT" ? "No puedes reagendar una cita a una fecha u hora pasada." : error.code === "AUTH_REQUIRED" || error.status === 401 ? "Tu sesión expiró. Inicia sesión nuevamente." : error.message || "No fue posible reprogramar la cita.";
+      setErrorReagenda(texto);
       setMensajeAgenda({ tipo: "error", texto });
       return;
+    } finally {
+      setGuardandoReagenda(false);
     }
 
     setCitaEditando(null);
     setNuevaFecha("");
     setNuevaHora("");
+    setErrorReagenda("");
   }
 
   function renderEventoGoogleCalendar(evento) {
@@ -896,6 +935,7 @@ export default function AgendaPage({
             setCitaEditando(cita);
             setNuevaFecha(cita.fecha?.slice(0, 10));
             setNuevaHora(cita.hora_inicio?.slice(0, 5));
+            setErrorReagenda("");
           }}
           className="mt-2 w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm font-black text-blue-600 hover:bg-blue-50"
         >
@@ -942,17 +982,44 @@ export default function AgendaPage({
     const primary = cita.estado === "pendiente_confirmacion" && !atendida
       ? <button type="button" onClick={() => setCitaConfirmando(cita)} className="col-span-2 rounded bg-emerald-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-emerald-700">Aceptar reserva</button>
       : null;
-    return <div className="mt-1 grid grid-cols-2 gap-1"><div className="col-span-2 flex items-center justify-between"><span className="text-[9px] font-black uppercase tracking-wide text-slate-500">Estado: {estado}</span><details className="relative"><summary aria-label="Más acciones de la cita" title="Más acciones" className="grid h-6 w-6 cursor-pointer list-none place-items-center rounded-full border border-slate-300 bg-white text-sm font-black leading-none text-slate-600 hover:bg-slate-50">⋮</summary><div className="absolute right-0 z-20 mt-1 grid w-32 gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"><button type="button" onClick={() => verFichaClinica?.(cita.pacientes)} className="rounded border border-cyan-300 bg-white px-1 py-1 text-[9px] font-black text-cyan-700 hover:bg-cyan-50">Ver ficha clínica</button><button type="button" hidden={atendida} onClick={() => { setCitaEditando(cita); setNuevaFecha(cita.fecha?.slice(0, 10) || ""); setNuevaHora(cita.hora_inicio?.slice(0, 5) || ""); }} className="rounded border border-blue-300 bg-white px-1 py-1 text-[9px] font-black text-blue-700 hover:bg-blue-50">Reagendar</button><button type="button" hidden={atendida} onClick={() => cancelarCita(cita)} className="rounded border border-red-300 bg-white px-1 py-1 text-[9px] font-black text-red-700 hover:bg-red-50">Cancelar cita</button></div></details></div>{primary}</div>;
+    return <div className="mt-1 grid grid-cols-2 gap-1"><div className="col-span-2 flex items-center justify-between"><span className="text-[9px] font-black uppercase tracking-wide text-slate-500">Estado: {estado}</span><details className="relative"><summary aria-label="Más acciones de la cita" title="Más acciones" className="grid h-6 w-6 cursor-pointer list-none place-items-center rounded-full border border-slate-300 bg-white text-sm font-black leading-none text-slate-600 hover:bg-slate-50">⋮</summary><div className="absolute right-0 z-20 mt-1 grid w-32 gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"><button type="button" onClick={() => verFichaClinica?.(cita.pacientes)} className="rounded border border-cyan-300 bg-white px-1 py-1 text-[9px] font-black text-cyan-700 hover:bg-cyan-50">Ver ficha clínica</button><button type="button" hidden={atendida} onClick={() => { setCitaEditando(cita); setNuevaFecha(cita.fecha?.slice(0, 10) || ""); setNuevaHora(cita.hora_inicio?.slice(0, 5) || ""); setErrorReagenda(""); }} className="rounded border border-blue-300 bg-white px-1 py-1 text-[9px] font-black text-blue-700 hover:bg-blue-50">Reagendar</button><button type="button" hidden={atendida} onClick={() => cancelarCita(cita)} className="rounded border border-red-300 bg-white px-1 py-1 text-[9px] font-black text-red-700 hover:bg-red-50">Cancelar cita</button></div></details></div>{primary}</div>;
   }
 
   function renderHorarioAgendaConModalidad() {
     const horas = Array.from({ length: 24 }, (_, i) => i);
-    const slotsPorDia = diasSemana.map(slotsMentaliaDelDiaAgenda);
-    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]"><div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>{horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="min-h-[28px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>{diasSemana.map((f, i) => { const fecha = fechaTexto(f); const slots = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora); const continuaciones = slotsPorDia[i].filter((s) => Number(s.hora_inicio.slice(0, 2)) < hora && (Number(s.hora_fin.slice(0, 2)) + (s.hora_fin.slice(3, 5) !== "00" ? 1 : 0)) > hora); const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : []; return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">{eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800">{e.hora_inicio} - {e.hora_fin}<p className="text-[10px]">{e.titulo}</p></div>)}{continuaciones.map((s) => <div key={`cont-${fecha}-${s.hora_inicio}-${hora}`} className="min-h-[28px] rounded-lg border border-emerald-200 bg-emerald-50" />)}{slots.map((s) => { const cita = citas.find((c) => c.fecha?.slice(0, 10) === fecha && c.hora_inicio?.slice(0, 5) === s.hora_inicio && c.estado !== "cancelada"); return <div key={s.hora_inicio} className={cita ? "rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700" : "rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700"}><div className="flex items-center justify-between gap-1"><span>{s.hora_inicio} - {s.hora_fin}</span><ModalidadAgenda modalidad={s.modalidad} /></div>{cita && <><p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p>{accionAceptarReserva(cita)}{(cita.estado === "confirmada" || cita.estado === "reprogramada") && <button type="button" onClick={() => abrirFlujo(cita)} className="mt-1 w-full rounded-md bg-cyan-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-cyan-700">Abrir Pre-sesión</button>}</>}</div>;})}</div></div>;})}</div>)}</div></div>;
+    return <div ref={timelineRef} className="max-h-[680px] overflow-auto rounded-xl"><div className="min-w-[1050px]">
+      <div className="sticky top-0 z-10 grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px"><div className="bg-white p-2" />{diasSemana.map((f) => <div key={fechaTexto(f)} className="bg-white p-2 text-center"><p className="font-black text-cyan-700">{dias.find((d) => d.id === (f.getDay() || 7))?.nombre}</p><p className="text-xs text-slate-500">{formatearFecha(fechaTexto(f))}</p></div>)}</div>
+      {horas.map((hora) => <div key={hora} data-hour={hora} className="grid grid-cols-[64px_repeat(7,minmax(130px,1fr))] gap-px bg-slate-200 p-px">
+        <div className="min-h-[40px] bg-slate-50 p-1 text-center text-sm font-black text-slate-500">{String(hora).padStart(2, "0")}:00</div>
+        {diasSemana.map((f) => {
+          const fecha = fechaTexto(f);
+          const delDia = citas.filter((c) => c.fecha?.slice(0, 10) === fecha && c.estado !== "cancelada");
+          const slots = slotsMentaliaDelDiaAgenda(f).filter((s) => Number(s.hora_inicio.slice(0, 2)) === hora && !delDia.some((c) => seSuperponen(s.hora_inicio, s.hora_fin, c.hora_inicio, c.hora_fin)));
+          const actuales = delDia.filter((c) => Number(c.hora_inicio.slice(0, 2)) === hora);
+          const continuaciones = delDia.filter((c) => Number(c.hora_inicio.slice(0, 2)) < hora && Number(c.hora_fin.slice(0, 2)) * 60 + Number(c.hora_fin.slice(3, 5)) > hora * 60);
+          const eventos = googleCalendarActivo ? eventoGoogleEnHoraAgenda(fecha, hora) : [];
+          const horaInicio = `${String(hora).padStart(2, "0")}:00`;
+          return <div key={`${fecha}-${hora}`} className="bg-white p-1"><div className="space-y-1">
+            {eventos.map((e) => <div key={e.google_calendar_event_id || e.id} className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-1.5 text-xs font-bold text-blue-800">{e.hora_inicio} - {e.hora_fin}<p className="text-[10px]">{e.titulo}</p></div>)}
+            {continuaciones.map((c) => <div key={`cont-${c.id}`} className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-[10px] text-red-700">Atención en curso hasta {c.hora_fin?.slice(0, 5)}</div>)}
+            {actuales.map((cita) => <div key={cita.id} className="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700">
+              <div className="flex items-center justify-between gap-1"><span>{cita.hora_inicio?.slice(0, 5)} - {cita.hora_fin?.slice(0, 5)}</span><ModalidadAgenda modalidad={cita.modalidad} /></div>
+              <p className="line-clamp-1 text-[10px]">{`${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() || "Reservado"}</p>
+              {cita.atencion_rapida && <p className="text-[10px]">Atención rápida</p>}
+              {accionAceptarReserva(cita)}
+              {(cita.estado === "confirmada" || cita.estado === "reprogramada") && <button type="button" onClick={() => cita.atencion_rapida ? iniciarAtencionRapida({ ...cita, patient: `${cita.pacientes?.nombres || ""} ${cita.pacientes?.apellidos || ""}`.trim() }) : abrirFlujo(cita)} className="mt-1 w-full rounded-md bg-cyan-600 px-1.5 py-1 text-[10px] font-black text-white hover:bg-cyan-700">{cita.atencion_rapida ? "Abrir atención" : "Abrir Pre-sesión"}</button>}
+            </div>)}
+            {slots.map((s, index) => <button key={`${s.hora_inicio}-${index}`} type="button" onClick={() => setInicioRapido({ fecha, hora_inicio: s.hora_inicio })} className="flex w-full items-center justify-between gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"><span>{s.hora_inicio} - {s.hora_fin}</span><ModalidadAgenda modalidad={s.modalidad} /></button>)}
+            <button type="button" aria-label={`Crear atención el ${fecha} a las ${horaInicio}`} onClick={() => setInicioRapido({ fecha, hora_inicio: horaInicio })} className="min-h-7 w-full rounded border border-dashed border-transparent px-1 text-left text-[10px] text-slate-500 hover:border-cyan-300 hover:bg-cyan-50 focus:border-cyan-500">+ Atención rápida</button>
+          </div></div>;
+        })}
+      </div>)}
+    </div></div>;
   }
 
   return (
     <main className="min-h-screen bg-[#eef8fb] px-4 py-6 lg:px-8">
+      {inicioRapido && <AtencionRapidaPanel inicio={inicioRapido} citas={citas} eventos={googleCalendarActivo ? eventosGoogleCalendar : []} onClose={() => setInicioRapido(null)} onCreated={(cita) => { setInicioRapido(null); iniciarAtencionRapida(cita); }} />}
       <div className="mx-auto w-full max-w-[1600px] px-2">
         <button onClick={goBack} className="mb-4 font-bold text-cyan-700">
           ← Volver
@@ -961,6 +1028,7 @@ export default function AgendaPage({
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-3xl font-black">Agenda</h1>
+            <button type="button" onClick={() => setInicioRapido(ahoraSantiago())} className="mt-3 rounded-xl bg-cyan-600 px-4 py-3 font-black text-white hover:bg-cyan-700">Atender ahora</button>
 
             <p className="text-sm text-slate-500">{cargando ? "Cargando agenda..." : "Agenda de citas y disponibilidad"}</p>
           </div>
@@ -1256,19 +1324,32 @@ export default function AgendaPage({
               </div>
             </div>
 
+            {errorReagenda && (
+              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+                {errorReagenda}
+              </p>
+            )}
+
             <div className="mt-6 flex gap-3">
               <button
-                onClick={() => setCitaEditando(null)}
-                className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-bold"
+                type="button"
+                onClick={() => {
+                  setCitaEditando(null);
+                  setErrorReagenda("");
+                }}
+                disabled={guardandoReagenda}
+                className="flex-1 rounded-xl border border-slate-300 px-4 py-3 font-bold disabled:opacity-50"
               >
                 Cancelar
               </button>
 
               <button
+                type="button"
                 onClick={guardarReagenda}
-                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-black text-white"
+                disabled={guardandoReagenda}
+                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Guardar
+                {guardandoReagenda ? "Guardando..." : "Guardar"}
               </button>
             </div>
           </div>
