@@ -572,6 +572,39 @@ export default function ConfiguracionPage({ user, goBack }) {
             </p>
           )}
         </section>
+
+        <section className="mt-6 rounded-3xl bg-white p-6 shadow">
+          <h2 className="text-2xl font-black text-slate-900">Legal y privacidad</h2>
+          <p className="mt-2 text-sm text-slate-500">
+            Accede a los documentos públicos de FluyePro. Estos enlaces también están disponibles sin iniciar sesión para usuarios, pacientes y revisiones de proveedores externos.
+          </p>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <a
+              href="/privacidad"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-2xl border border-cyan-100 bg-cyan-50 p-4 transition hover:border-cyan-300 hover:bg-cyan-100"
+            >
+              <p className="font-black text-cyan-900">Política de Privacidad</p>
+              <p className="mt-1 text-sm text-cyan-800">
+                Revisa cómo tratamos datos personales y comunicaciones administrativas.
+              </p>
+            </a>
+
+            <a
+              href="/terminos"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200 hover:bg-cyan-50"
+            >
+              <p className="font-black text-slate-900">Términos y Condiciones</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Consulta las condiciones de uso de la plataforma y la reserva pública.
+              </p>
+            </a>
+          </div>
+        </section>
       </div>
     </main>
   );
