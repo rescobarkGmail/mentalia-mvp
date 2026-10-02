@@ -16,6 +16,7 @@ import SesionClinicaPage from "./pages/SesionClinicaPage";
 import FichaClinicaPage from "./pages/FichaClinicaPage";
 import ConfiguracionPage from "./pages/ConfiguracionPage";
 import ConsentimientoPublicoPage from "./pages/ConsentimientoPublicoPage";
+import { PrivacidadPage, TerminosPage } from "./pages/LegalPage";
 import AppShell from "./components/AppShell";
 
 const APP_SESSION_CACHE_KEY = "mentalia_app_session_cache_v1";
@@ -97,6 +98,9 @@ export default function App() {
   const reservaPublica = obtenerReservaPublicaDesdeUrl();
   const urlActual = typeof window !== "undefined" ? new URL(window.location.href) : null;
   const partesUrl = urlActual?.pathname.split("/").filter(Boolean) || [];
+  const paginaLegal = partesUrl[0] === "privacidad" || partesUrl[0] === "terminos"
+    ? partesUrl[0]
+    : "";
   const tokenConsentimiento = partesUrl[0] === "consentimiento" ? partesUrl[1] : urlActual?.searchParams.get("token");
   const cacheSesionInicial = leerCacheSesionApp();
   const [isLoggedIn, setIsLoggedIn] = useState(Boolean(cacheSesionInicial?.user));
@@ -385,6 +389,14 @@ export default function App() {
     setView("dashboard");
   }
 
+
+  if (paginaLegal === "privacidad") {
+    return <PrivacidadPage />;
+  }
+
+  if (paginaLegal === "terminos") {
+    return <TerminosPage />;
+  }
 
   if (reservaPublica.esReservaPublica) {
     return (
