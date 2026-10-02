@@ -526,6 +526,7 @@ export default function App() {
     return (
       <ReservarHoraPage
         profesionalId={user?.id}
+        slug={profile?.slug_publico || ""}
         goBack={volverDashboardDesdeReserva}
         onReservaExitosa={() => {
           setAgendaRefreshKey((actual) => actual + 1);
