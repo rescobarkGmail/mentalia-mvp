@@ -6,6 +6,21 @@ export function ahoraSantiago(instante = new Date()) {
 
 export { normalizarRut, rutValido, rutParaGuardar } from "../../supabase/functions/_shared/rut.js";
 
+export function formatearRutChileno(valor) {
+  const limpio = String(valor || "")
+    .toUpperCase()
+    .replace(/[^0-9K]/g, "");
+
+  if (!limpio) return "";
+
+  const cuerpo = limpio.slice(0, -1);
+  const dv = limpio.slice(-1);
+
+  if (!cuerpo) return dv;
+
+  return `${cuerpo.replace(/\B(?=(\d{3})+(?!\d))/g, ".")}-${dv}`;
+}
+
 export function minutos(hora) {
   const [h, m] = String(hora).split(":").map(Number);
   return h * 60 + m;

@@ -1,5 +1,5 @@
 import DocumentoCampos from "../components/DocumentoCampos";
-import { documentoParaGuardar, errorDocumento } from "../../supabase/functions/_shared/documento.js";
+import { documentoParaGuardar, errorDocumento, normalizarPasaporte } from "../../supabase/functions/_shared/documento.js";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   buscarPacientePublico,
@@ -598,7 +598,12 @@ export default function ReservarHoraPage({
   }
 
   function manejarCambioRut(valor) {
-    const formateado = documento.tipo_identificador === "rut" ? formatearRutChileno(valor) : valor;
+    const formateado =
+      documento.tipo_identificador === "rut"
+        ? formatearRutChileno(valor)
+        : documento.tipo_identificador === "pasaporte"
+          ? normalizarPasaporte(valor)
+          : valor;
 
     rutActualRef.current = formateado;
     setIdentificador(formateado);
@@ -611,6 +616,22 @@ export default function ReservarHoraPage({
   }
 
   function manejarBlurRut() {
+    if (documento.tipo_identificador === "pasaporte") {
+      const pasaporteFormateado = normalizarPasaporte(identificador);
+
+      rutActualRef.current = pasaporteFormateado;
+      setIdentificador(pasaporteFormateado);
+
+      setErroresFormulario((prev) => ({
+        ...prev,
+        identificador: errorDocumento(
+          { ...documento, identificador: pasaporteFormateado },
+          false,
+        ),
+      }));
+      return;
+    }
+
     if (documento.tipo_identificador !== "rut") return;
     const rutFormateado = formatearRutChileno(identificador);
 

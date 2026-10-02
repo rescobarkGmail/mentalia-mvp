@@ -2,7 +2,7 @@ import DocumentoCampos from "./DocumentoCampos";
 import { claveDocumento, errorDocumento } from "../../supabase/functions/_shared/documento.js";
 import { useEffect, useRef, useState } from "react";
 import { crearAtencionRapida, obtenerPacientes, obtenerPerfilProfesional } from "../lib/mentaliaApi";
-import { ahoraSantiago, conflictoEvento, finAtencion, normalizarRut, seSuperponen } from "../utils/atencionRapida";
+import { ahoraSantiago, conflictoEvento, finAtencion, formatearRutChileno, normalizarRut, rutValido, seSuperponen } from "../utils/atencionRapida";
 
 export default function AtencionRapidaPanel({ inicio, citas, eventos = [], onClose, onCreated }) {
   const dialogRef = useRef(null);
@@ -43,9 +43,21 @@ export default function AtencionRapidaPanel({ inicio, citas, eventos = [], onClo
   const conflictosGoogle = fin ? eventos.filter((evento) => conflictoEvento(horario.fecha, horario.hora_inicio, fin, evento)) : [];
   const hayConflicto = conflictos.length > 0 || conflictosGoogle.length > 0 || conflictoServidor;
   const provisional = nuevo && (!datos.apellidos.trim() || !datos.identificador.trim() || !datos.fecha_nacimiento || !datos.tipo_identificador || !datos.pais_emisor_identificador);
+  const rutChilenoSeleccionado = datos.tipo_identificador === "rut" && datos.pais_emisor_identificador === "CL";
+  const rutInvalido = nuevo && rutChilenoSeleccionado && datos.identificador.trim() && !rutValido(datos.identificador);
   const duplicado = datos.identificador.trim() && pacientes.find((p) => claveDocumento(p) === claveDocumento(datos));
   const encontrados = pacientes.filter((p) => `${p.nombres || ""} ${p.apellidos || ""}`.toLocaleLowerCase().includes(busqueda.toLocaleLowerCase()) || (normalizarRut(busqueda) && normalizarRut(p.identificador).includes(normalizarRut(busqueda)))).slice(0, 15);
   const cambiarHorario = (key, value) => { setHorario((prev) => ({ ...prev, [key]: value })); setConfirmarConflicto(false); setConflictoServidor(false); };
+  const cambiarDato = (key, value) => {
+    const valor =
+      key === "identificador" &&
+      datos.tipo_identificador === "rut" &&
+      datos.pais_emisor_identificador === "CL"
+        ? formatearRutChileno(value)
+        : value;
+
+    setDatos((prev) => ({ ...prev, [key]: valor }));
+  };
 
   async function guardar(event) {
     event.preventDefault();
@@ -87,7 +99,8 @@ export default function AtencionRapidaPanel({ inicio, citas, eventos = [], onClo
         {errorCarga && <p role="alert" className="text-red-700">{errorCarga}</p>}
         {!nuevo ? <div><label>Buscar por nombre o documento<input autoFocus value={busqueda} onChange={(event) => { setBusqueda(event.target.value); setPacienteId(""); }} className={inputClass} /></label><label className="mt-2 block">Paciente<select required value={pacienteId} onChange={(event) => setPacienteId(event.target.value)} className={inputClass}><option value="">Seleccionar paciente</option>{encontrados.map((p) => <option key={p.id} value={p.id}>{p.nombres} {p.apellidos} · {p.identificador || "Documento pendiente"}</option>)}</select></label><p className="mt-1 text-xs text-slate-500">Se muestran hasta 15 coincidencias. Escribe para acotar la búsqueda.</p></div> : <div className="grid gap-3 sm:grid-cols-2">
           <DocumentoCampos datos={datos} onChange={setDatos} />
-          {[['nombres', 'Nombre o nombre de referencia', 'text'], ['apellidos', 'Apellidos (pueden quedar pendientes)', 'text'], ['identificador', 'Número de documento (puede quedar pendiente)', 'text'], ['fecha_nacimiento', 'Fecha de nacimiento (puede quedar pendiente)', 'date']].map(([key, label, type]) => <label key={key} className="text-sm">{label}<input type={type} required={key === "nombres"} max={type === "date" ? ahoraSantiago().fecha : undefined} value={datos[key]} onChange={(event) => setDatos((prev) => ({ ...prev, [key]: event.target.value }))} className={inputClass} /></label>)}
+          {[['nombres', 'Nombre o nombre de referencia', 'text'], ['apellidos', 'Apellidos (pueden quedar pendientes)', 'text'], ['identificador', 'Número de documento (puede quedar pendiente)', 'text'], ['fecha_nacimiento', 'Fecha de nacimiento (puede quedar pendiente)', 'date']].map(([key, label, type]) => <label key={key} className="text-sm">{label}<input type={type} required={key === "nombres"} max={type === "date" ? ahoraSantiago().fecha : undefined} value={datos[key]} onChange={(event) => cambiarDato(key, event.target.value)} className={inputClass} /></label>)}
+          {rutInvalido && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700 sm:col-span-2">El RUT chileno no es válido. Revisa el dígito verificador.</p>}
           {provisional && <p className="rounded-xl bg-amber-50 p-3 text-sm sm:col-span-2">Registro provisional: podrás completar los datos desde Pacientes.</p>}
           {duplicado && <button type="button" onClick={() => { setPacienteId(duplicado.id); setBusqueda(duplicado.identificador); setNuevo(false); }} className="rounded-xl bg-cyan-100 p-3 text-sm sm:col-span-2">Usar paciente existente: {duplicado.nombres} {duplicado.apellidos}</button>}
         </div>}

@@ -475,17 +475,12 @@ export default function ConfiguracionPage({ user, goBack }) {
                       <p className="text-xs text-slate-500">Enviar un correo antes de la atención.</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
                         <span>Horas antes</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="168"
-                          value={configuracionNotificaciones.horas_antes_recordatorio_email}
-                          onChange={(e) => cambiarNotificacion("horas_antes_recordatorio_email", Number(e.target.value))}
-                          className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-sm font-black text-slate-700 outline-none focus:border-cyan-500"
-                        />
-                      </label>
+                        <span className="min-w-14 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-center text-sm font-black text-slate-700">
+                          {configuracionNotificaciones.horas_antes_recordatorio_email}
+                        </span>
+                      </div>
                       <Interruptor
                         checked={configuracionNotificaciones.recordatorio_email_activo}
                         onChange={(valor) => cambiarNotificacion("recordatorio_email_activo", valor)}
@@ -537,17 +532,12 @@ export default function ConfiguracionPage({ user, goBack }) {
                       <p className="text-xs text-slate-500">Enviar un WhatsApp antes de la atención.</p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
                         <span>Minutos antes</span>
-                        <input
-                          type="number"
-                          min="5"
-                          max="1440"
-                          value={configuracionNotificaciones.minutos_antes_recordatorio_whatsapp}
-                          onChange={(e) => cambiarNotificacion("minutos_antes_recordatorio_whatsapp", Number(e.target.value))}
-                          className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-center text-sm font-black text-slate-700 outline-none focus:border-cyan-500"
-                        />
-                      </label>
+                        <span className="min-w-14 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-center text-sm font-black text-slate-700">
+                          {configuracionNotificaciones.minutos_antes_recordatorio_whatsapp}
+                        </span>
+                      </div>
                       <Interruptor
                         checked={configuracionNotificaciones.recordatorio_whatsapp_activo}
                         onChange={(valor) => cambiarNotificacion("recordatorio_whatsapp_activo", valor)}

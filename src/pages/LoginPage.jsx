@@ -147,17 +147,17 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#e9f8fb] px-4">
+    <main className="flex min-h-screen flex-col items-center justify-center bg-[#e9f8fb] px-4 py-8">
       <motion.section
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-md"
       >
-        <div className="rounded-xl bg-white p-8 shadow-lg">
+        <div className="rounded-2xl border border-cyan-100 bg-white p-8 shadow-[0_18px_45px_rgba(15,118,130,0.16)]">
           <BrainLogo />
 
-          <p className="mt-10 text-center text-sm text-gray-500">
-            DEMO - Prototipo de Sistema de Apoyo Documental
+          <p className="mt-12 text-center text-base text-slate-500">
+            Plataforma de gestión para profesionales
           </p>
 
           {SHOW_EMAIL_LOGIN && (
@@ -210,9 +210,9 @@ export default function LoginPage() {
             </div>
           )}
 
-          <div className="mt-8 space-y-3">
+          <div className="mt-8 space-y-4">
             <LoginButton
-              provider={loading ? "Conectando con Google..." : "Ingresar con Gmail"}
+              provider={loading ? "Conectando con Google..." : "Ingresar con Google"}
               icon={<GoogleLogo />}
               onClick={handleGoogleLogin}
             />
@@ -234,6 +234,10 @@ export default function LoginPage() {
           </div>
         </div>
       </motion.section>
+
+      <p className="mt-7 text-center text-sm text-slate-500">
+        Ambiente de prueba - No utilizar con datos reales
+      </p>
 
       {modalMessage && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">

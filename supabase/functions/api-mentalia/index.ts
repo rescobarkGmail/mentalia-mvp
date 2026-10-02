@@ -799,7 +799,10 @@ async function requestPatientConsents(supabase: SupabaseClient, auth: AuthContex
   const tokenHash = await hashToken(token);
   const { error: requestError } = await supabase.from("consentimientos_solicitudes").insert({ id: solicitudId, profesional_id: auth.userId, paciente_id: patientId, token_hash: tokenHash, expira_en: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() });
   if (requestError) throw new HttpError(500, "CONSENTS_REQUEST_FAILED", "No fue posible crear la solicitud de consentimientos.");
-  const pending = (types ?? []).filter((type) => currentByCode.get(type.codigo) !== "aceptado").map((type) => ({
+  const pending = (types ?? []).filter((type) => {
+    const estadoActual = currentByCode.get(type.codigo);
+    return !estadoActual || estadoActual === "pendiente";
+  }).map((type) => ({
     profesional_id: auth.userId,
     paciente_id: patientId,
     codigo: type.codigo,

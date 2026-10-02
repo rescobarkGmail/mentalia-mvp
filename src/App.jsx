@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
 
-import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import AgendaPage from "./pages/AgendaPage";
@@ -19,6 +18,47 @@ import ConfiguracionPage from "./pages/ConfiguracionPage";
 import ConsentimientoPublicoPage from "./pages/ConsentimientoPublicoPage";
 import AppShell from "./components/AppShell";
 
+const APP_SESSION_CACHE_KEY = "mentalia_app_session_cache_v1";
+
+function leerCacheSesionApp() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(APP_SESSION_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function guardarCacheSesionApp(payload) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      APP_SESSION_CACHE_KEY,
+      JSON.stringify({ ...payload, guardadoEn: new Date().toISOString() }),
+    );
+  } catch {
+    // La caché solo evita parpadeos visuales; si falla, no bloquea la app.
+  }
+}
+
+function limpiarCacheSesionApp() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(APP_SESSION_CACHE_KEY);
+  } catch {
+    // Sin acción.
+  }
+}
 
 function obtenerReservaPublicaDesdeUrl() {
   if (typeof window === "undefined") {
@@ -58,13 +98,15 @@ export default function App() {
   const urlActual = typeof window !== "undefined" ? new URL(window.location.href) : null;
   const partesUrl = urlActual?.pathname.split("/").filter(Boolean) || [];
   const tokenConsentimiento = partesUrl[0] === "consentimiento" ? partesUrl[1] : urlActual?.searchParams.get("token");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [provider, setProvider] = useState("Google");
-  const [view, setView] = useState("landing");
+  const cacheSesionInicial = leerCacheSesionApp();
+  const [isLoggedIn, setIsLoggedIn] = useState(Boolean(cacheSesionInicial?.user));
+  const [authReady, setAuthReady] = useState(Boolean(cacheSesionInicial?.user));
+  const [provider, setProvider] = useState(cacheSesionInicial?.provider || "Google");
+  const [view, setView] = useState(cacheSesionInicial?.user ? "dashboard" : "login");
 
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
+  const [user, setUser] = useState(cacheSesionInicial?.user || null);
+  const [profile, setProfile] = useState(cacheSesionInicial?.profile || null);
 
   const [citaActiva, setCitaActiva] = useState(null);
   const [pacienteActivo, setPacienteActivo] = useState(null);
@@ -153,6 +195,11 @@ export default function App() {
     setProfile(perfil);
     setProvider(selectedProvider);
     setIsLoggedIn(true);
+    guardarCacheSesionApp({
+      user: usuarioOperativo,
+      profile: perfil,
+      provider: selectedProvider,
+    });
 
     const debeRedirigir = opciones?.redirigir !== false;
 
@@ -174,48 +221,54 @@ export default function App() {
 
   useEffect(() => {
     async function recuperarSesionInicial() {
-      // Supabase procesa automáticamente el callback PKCE y espera a que la
-      // sesión quede disponible antes de resolver getSession().
-      const inicializacion = await supabase.auth.initialize();
-      const { data, error } = await supabase.auth.getSession();
+      try {
+        // Supabase procesa automáticamente el callback PKCE y espera a que la
+        // sesión quede disponible antes de resolver getSession().
+        const inicializacion = await supabase.auth.initialize();
+        const { data, error } = await supabase.auth.getSession();
 
-      // OAuth puede regresar temporalmente con tokens en el fragmento/hash.
-      // La sesión ya fue procesada por Supabase; se elimina de la barra de
-      // direcciones para no exponer credenciales en historial, capturas o logs.
-      if (typeof window !== "undefined" && /(?:^|#|&)access_token=|(?:^|#|&)refresh_token=|(?:^|#|&)provider_token=/.test(window.location.hash)) {
-        const cleanUrl = new URL(window.location.href);
-        cleanUrl.hash = "";
-        window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
-      }
-
-      if (error) {
-        console.error("Error recuperando sesión:", error);
-        setIsLoggedIn(false);
-        setView("login");
-        return;
-      }
-
-      if (inicializacion?.error) {
-        console.error("Error procesando el callback de autenticación:", inicializacion.error);
-      }
-
-      const session = data?.session;
-
-      if (!session?.user) {
-        setIsLoggedIn(false);
-        const hayCallbackOAuth =
-          typeof window !== "undefined" &&
-          Boolean(new URL(window.location.href).searchParams.get("code"));
-        if (hayCallbackOAuth) {
+        // OAuth puede regresar temporalmente con tokens en el fragmento/hash.
+        // La sesión ya fue procesada por Supabase; se elimina de la barra de
+        // direcciones para no exponer credenciales en historial, capturas o logs.
+        if (typeof window !== "undefined" && /(?:^|#|&)access_token=|(?:^|#|&)refresh_token=|(?:^|#|&)provider_token=/.test(window.location.hash)) {
           const cleanUrl = new URL(window.location.href);
-          cleanUrl.searchParams.delete("code");
+          cleanUrl.hash = "";
           window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
         }
-        setView(hayCallbackOAuth ? "login" : "landing");
-        return;
-      }
 
-      await aplicarSesion(session.user, "Google", { redirigir: true });
+        if (error) {
+          console.error("Error recuperando sesión:", error);
+          setIsLoggedIn(false);
+          limpiarCacheSesionApp();
+          setView("login");
+          return;
+        }
+
+        if (inicializacion?.error) {
+          console.error("Error procesando el callback de autenticación:", inicializacion.error);
+        }
+
+        const session = data?.session;
+
+        if (!session?.user) {
+          setIsLoggedIn(false);
+          limpiarCacheSesionApp();
+          const hayCallbackOAuth =
+            typeof window !== "undefined" &&
+            Boolean(new URL(window.location.href).searchParams.get("code"));
+          if (hayCallbackOAuth) {
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete("code");
+            window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
+          }
+          setView("login");
+          return;
+        }
+
+        await aplicarSesion(session.user, "Google", { redirigir: true });
+      } finally {
+        setAuthReady(true);
+      }
     }
 
     const {
@@ -230,6 +283,7 @@ export default function App() {
           setSelectedPatient(null);
           setUser(null);
           setProfile(null);
+          limpiarCacheSesionApp();
           setCitaActiva(null);
           setPacienteActivo(null);
           setCitaPreSesion(null);
@@ -244,13 +298,20 @@ export default function App() {
       // sesión y podrían quedar esperando el mismo bloqueo.
       const diferirAplicacionSesion = (redirigir) => {
         setTimeout(() => {
-          aplicarSesion(session.user, "Google", { redirigir }).catch((error) => {
-            console.error("Error aplicando sesión autenticada:", error);
-          });
+          aplicarSesion(session.user, "Google", { redirigir })
+            .catch((error) => {
+              console.error("Error aplicando sesión autenticada:", error);
+            })
+            .finally(() => {
+              setAuthReady(true);
+            });
         }, 0);
       };
 
       if (event === "SIGNED_IN") {
+        if (!isLoggedInRef.current) {
+          setAuthReady(false);
+        }
         diferirAplicacionSesion(true);
         return;
       }
@@ -259,12 +320,14 @@ export default function App() {
         if (!isLoggedInRef.current) {
           diferirAplicacionSesion(true);
         }
+        setAuthReady(true);
         return;
       }
 
       // Para eventos como TOKEN_REFRESHED o USER_UPDATED no cambiamos la vista.
       // Solo refrescamos user/profile sin mandar al dashboard.
       diferirAplicacionSesion(false);
+      setAuthReady(true);
     });
 
     recuperarSesionInicial();
@@ -295,6 +358,7 @@ export default function App() {
     setSelectedPatient(null);
     setUser(null);
     setProfile(null);
+    limpiarCacheSesionApp();
     setCitaActiva(null);
     setPacienteActivo(null);
     setCitaPreSesion(null);
@@ -336,8 +400,15 @@ export default function App() {
     return <ConsentimientoPublicoPage token={tokenConsentimiento} />;
   }
 
-  if (view === "landing") {
-    return <LandingPage goToApp={() => setView("login")} />;
+  if (!authReady) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#eef8fb] text-slate-800">
+        <div className="rounded-3xl bg-white px-8 py-6 text-center shadow">
+          <p className="text-lg font-black">Cargando FluyePro...</p>
+          <p className="mt-2 text-sm text-slate-500">Estamos recuperando tu sesión.</p>
+        </div>
+      </main>
+    );
   }
 
   if (!isLoggedIn) {
@@ -474,6 +545,7 @@ export default function App() {
       profile={profile}
       goNuevaCita={() => setView("nueva-cita")}
       goReservar={() => setView("reservar")}
+      iniciarAtencionCita={iniciarSesionClinica}
     />
   );
 }
