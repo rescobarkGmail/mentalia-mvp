@@ -19,6 +19,8 @@ import {
   vincularEventoPaciente,
 } from "../lib/mentaliaApi";
 
+const AGENDA_REFRESH_INTERVAL_MS = 60 * 1000;
+
 const dias = [
   { id: 1, nombre: "Lunes" },
   { id: 2, nombre: "Martes" },
@@ -210,14 +212,16 @@ export default function AgendaPage({
     useState([]);
   const [guardandoVinculacion, setGuardandoVinculacion] = useState(false);
 
-  async function cargarCitas() {
+  async function cargarCitas({ silencioso = false } = {}) {
     if (!user?.id) {
       console.warn("AgendaPage: user.id aún no disponible.", user);
       setCargando(false);
       return;
     }
 
-    setCargando(true);
+    if (!silencioso) {
+      setCargando(true);
+    }
 
     try {
       const [citasData, disponibilidadData] = await Promise.all([
@@ -237,7 +241,9 @@ export default function AgendaPage({
       console.error("AgendaPage - error inesperado:", error);
       setMensajeAgenda({ tipo: "error", texto: "No fue posible cargar la agenda: " + error.message });
     } finally {
-      setCargando(false);
+      if (!silencioso) {
+        setCargando(false);
+      }
     }
   }
 
@@ -348,6 +354,33 @@ export default function AgendaPage({
       cargarAtencionesOperativas();
     }
   }, [user?.id, refreshKey]);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    function refrescarAgendaEnSegundoPlano() {
+      cargarCitas({ silencioso: true });
+      cargarAtencionesOperativas();
+    }
+
+    const intervaloId = window.setInterval(
+      refrescarAgendaEnSegundoPlano,
+      AGENDA_REFRESH_INTERVAL_MS,
+    );
+
+    function refrescarAlVolver() {
+      if (document.visibilityState === "visible") {
+        refrescarAgendaEnSegundoPlano();
+      }
+    }
+
+    document.addEventListener("visibilitychange", refrescarAlVolver);
+
+    return () => {
+      window.clearInterval(intervaloId);
+      document.removeEventListener("visibilitychange", refrescarAlVolver);
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (user?.id && googleCalendarActivo) {

@@ -66,6 +66,7 @@ function puedeAbrirAtencion(cita) {
 }
 
 const DASHBOARD_CACHE_KEY = "mentalia_dashboard_cache_v1";
+const DASHBOARD_REFRESH_INTERVAL_MS = 60 * 1000;
 
 function leerCacheDashboard() {
   if (typeof window === "undefined") {
@@ -314,8 +315,10 @@ export default function DashboardPage({
   useEffect(() => {
     let activo = true;
 
-    async function cargarDashboard() {
-      setCargando(true);
+    async function cargarDashboard({ silencioso = false } = {}) {
+      if (!silencioso) {
+        setCargando(true);
+      }
       setErrorCarga("");
 
       try {
@@ -375,14 +378,28 @@ export default function DashboardPage({
           );
         }
       } finally {
-        if (activo) setCargando(false);
+        if (activo && !silencioso) setCargando(false);
       }
     }
 
     cargarDashboard();
 
+    const intervaloId = window.setInterval(() => {
+      cargarDashboard({ silencioso: true });
+    }, DASHBOARD_REFRESH_INTERVAL_MS);
+
+    function refrescarAlVolver() {
+      if (document.visibilityState === "visible") {
+        cargarDashboard({ silencioso: true });
+      }
+    }
+
+    document.addEventListener("visibilitychange", refrescarAlVolver);
+
     return () => {
       activo = false;
+      window.clearInterval(intervaloId);
+      document.removeEventListener("visibilitychange", refrescarAlVolver);
     };
   }, []);
 
