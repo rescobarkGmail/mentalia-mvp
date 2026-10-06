@@ -20,6 +20,21 @@ import { PrivacidadPage, TerminosPage } from "./pages/LegalPage";
 import AppShell from "./components/AppShell";
 
 const APP_SESSION_CACHE_KEY = "mentalia_app_session_cache_v1";
+const APP_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function sesionAppExpirada(iniciadaEn) {
+  if (!iniciadaEn) {
+    return false;
+  }
+
+  const timestamp = new Date(iniciadaEn).getTime();
+
+  if (!Number.isFinite(timestamp)) {
+    return true;
+  }
+
+  return Date.now() - timestamp >= APP_SESSION_MAX_AGE_MS;
+}
 
 function leerCacheSesionApp() {
   if (typeof window === "undefined") {
@@ -28,7 +43,14 @@ function leerCacheSesionApp() {
 
   try {
     const raw = window.localStorage.getItem(APP_SESSION_CACHE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const cache = raw ? JSON.parse(raw) : null;
+
+    if (cache && sesionAppExpirada(cache.iniciadaEn || cache.guardadoEn)) {
+      window.localStorage.removeItem(APP_SESSION_CACHE_KEY);
+      return null;
+    }
+
+    return cache;
   } catch {
     return null;
   }
@@ -42,7 +64,11 @@ function guardarCacheSesionApp(payload) {
   try {
     window.localStorage.setItem(
       APP_SESSION_CACHE_KEY,
-      JSON.stringify({ ...payload, guardadoEn: new Date().toISOString() }),
+      JSON.stringify({
+        ...payload,
+        iniciadaEn: payload.iniciadaEn || new Date().toISOString(),
+        guardadoEn: new Date().toISOString(),
+      }),
     );
   } catch {
     // La caché solo evita parpadeos visuales; si falla, no bloquea la app.
@@ -59,6 +85,15 @@ function limpiarCacheSesionApp() {
   } catch {
     // Sin acción.
   }
+}
+
+function hayCallbackOAuthActual() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const url = new URL(window.location.href);
+  return Boolean(url.searchParams.get("code"));
 }
 
 function obtenerReservaPublicaDesdeUrl() {
@@ -121,6 +156,7 @@ export default function App() {
 
   const viewRef = useRef(view);
   const isLoggedInRef = useRef(isLoggedIn);
+  const sesionIniciadaEnRef = useRef(cacheSesionInicial?.iniciadaEn || cacheSesionInicial?.guardadoEn || null);
 
   useEffect(() => {
     viewRef.current = view;
@@ -188,6 +224,15 @@ export default function App() {
   ) {
     if (!currentUser) return;
 
+    if (sesionAppExpirada(sesionIniciadaEnRef.current)) {
+      await handleLogout();
+      return;
+    }
+
+    if (!sesionIniciadaEnRef.current) {
+      sesionIniciadaEnRef.current = new Date().toISOString();
+    }
+
     const perfil = await obtenerPerfilProfesional(currentUser);
     const usuarioOperativo = construirUsuarioOperativo(currentUser, perfil);
 
@@ -203,6 +248,7 @@ export default function App() {
       user: usuarioOperativo,
       profile: perfil,
       provider: selectedProvider,
+      iniciadaEn: sesionIniciadaEnRef.current,
     });
 
     const debeRedirigir = opciones?.redirigir !== false;
@@ -257,14 +303,30 @@ export default function App() {
         if (!session?.user) {
           setIsLoggedIn(false);
           limpiarCacheSesionApp();
-          const hayCallbackOAuth =
-            typeof window !== "undefined" &&
-            Boolean(new URL(window.location.href).searchParams.get("code"));
+          sesionIniciadaEnRef.current = null;
+          const hayCallbackOAuth = hayCallbackOAuthActual();
           if (hayCallbackOAuth) {
             const cleanUrl = new URL(window.location.href);
             cleanUrl.searchParams.delete("code");
             window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}`);
           }
+          setView("login");
+          return;
+        }
+
+        if (!sesionIniciadaEnRef.current && !hayCallbackOAuthActual()) {
+          await supabase.auth.signOut();
+          setIsLoggedIn(false);
+          limpiarCacheSesionApp();
+          setView("login");
+          return;
+        }
+
+        if (sesionAppExpirada(sesionIniciadaEnRef.current)) {
+          await supabase.auth.signOut();
+          setIsLoggedIn(false);
+          limpiarCacheSesionApp();
+          sesionIniciadaEnRef.current = null;
           setView("login");
           return;
         }
@@ -288,11 +350,22 @@ export default function App() {
           setUser(null);
           setProfile(null);
           limpiarCacheSesionApp();
+          sesionIniciadaEnRef.current = null;
           setCitaActiva(null);
           setPacienteActivo(null);
           setCitaPreSesion(null);
         }
 
+        return;
+      }
+
+      if (!sesionIniciadaEnRef.current && event !== "SIGNED_IN" && !hayCallbackOAuthActual()) {
+        supabase.auth.signOut();
+        return;
+      }
+
+      if (sesionAppExpirada(sesionIniciadaEnRef.current)) {
+        supabase.auth.signOut();
         return;
       }
 
@@ -341,6 +414,28 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isLoggedIn || !sesionIniciadaEnRef.current) {
+      return undefined;
+    }
+
+    const timestampInicio = new Date(sesionIniciadaEnRef.current).getTime();
+
+    if (!Number.isFinite(timestampInicio)) {
+      handleLogout();
+      return undefined;
+    }
+
+    const tiempoRestante = Math.max(timestampInicio + APP_SESSION_MAX_AGE_MS - Date.now(), 0);
+    const timeoutId = window.setTimeout(() => {
+      handleLogout();
+    }, tiempoRestante);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isLoggedIn]);
+
   async function handleLogin(selectedProvider) {
     setProvider(selectedProvider);
 
@@ -363,6 +458,7 @@ export default function App() {
     setUser(null);
     setProfile(null);
     limpiarCacheSesionApp();
+    sesionIniciadaEnRef.current = null;
     setCitaActiva(null);
     setPacienteActivo(null);
     setCitaPreSesion(null);
