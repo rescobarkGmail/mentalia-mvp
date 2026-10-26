@@ -199,7 +199,11 @@ export default function App() {
       perfil = data;
     }
 
-    return perfil;
+    // El correo confiable proviene de Supabase Auth. Algunos perfiles
+    // antiguos fueron creados sin copiarlo a la tabla profesional.
+    return perfil
+      ? { ...perfil, email: perfil.email || currentUser.email || "" }
+      : perfil;
   }
 
   function construirUsuarioOperativo(currentUser, perfil) {

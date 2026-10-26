@@ -20,6 +20,7 @@ export default function ProfilePage({ user, onComplete }) {
         apellidos,
         telefono,
         pais,
+        email: user.email || null,
       })
       .eq("id", user.id);
 
