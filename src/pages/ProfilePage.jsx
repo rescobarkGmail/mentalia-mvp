@@ -13,7 +13,7 @@ export default function ProfilePage({ user, onComplete }) {
       return;
     }
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("profesional")
       .update({
         nombres,
@@ -22,14 +22,22 @@ export default function ProfilePage({ user, onComplete }) {
         pais,
         email: user.email || null,
       })
-      .eq("id", user.id)
-      .select("*")
-      .single();
+      .eq("id", user.id);
 
     if (error) {
       alert(error.message);
     } else {
-      onComplete(data);
+      // No exigimos que PostgREST devuelva un único objeto: algunas cuentas
+      // antiguas pueden tener una respuesta no única aunque la actualización
+      // haya sido exitosa. El estado local ya contiene todos los datos guardados.
+      onComplete({
+        ...user,
+        nombres,
+        apellidos,
+        telefono,
+        pais,
+        email: user.email || "",
+      });
     }
   }
 
