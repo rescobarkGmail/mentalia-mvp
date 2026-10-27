@@ -531,7 +531,23 @@ export default function App() {
     return (
       <ProfilePage
         user={user}
-        onComplete={() => setView("dashboard")}
+        onComplete={(perfilActualizado) => {
+          setProfile(perfilActualizado);
+          setUser((usuarioActual) => ({
+            ...usuarioActual,
+            email: perfilActualizado?.email || usuarioActual?.email || "",
+          }));
+          guardarCacheSesionApp({
+            user: {
+              ...user,
+              email: perfilActualizado?.email || user?.email || "",
+            },
+            profile: perfilActualizado,
+            provider,
+            iniciadaEn: sesionIniciadaEnRef.current,
+          });
+          setView("dashboard");
+        }}
       />
     );
   }

@@ -13,7 +13,7 @@ export default function ProfilePage({ user, onComplete }) {
       return;
     }
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("profesional")
       .update({
         nombres,
@@ -22,12 +22,14 @@ export default function ProfilePage({ user, onComplete }) {
         pais,
         email: user.email || null,
       })
-      .eq("id", user.id);
+      .eq("id", user.id)
+      .select("*")
+      .single();
 
     if (error) {
       alert(error.message);
     } else {
-      onComplete();
+      onComplete(data);
     }
   }
 
