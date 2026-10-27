@@ -15,14 +15,15 @@ export default function ProfilePage({ user, onComplete }) {
 
     const { error } = await supabase
       .from("profesional")
-      .update({
+      .upsert({
+        id: user.id,
         nombres,
         apellidos,
         telefono,
         pais,
         email: user.email || null,
-      })
-      .eq("id", user.id);
+        vigente: true,
+      }, { onConflict: "id" });
 
     if (error) {
       alert(error.message);
